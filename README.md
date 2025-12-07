@@ -18,6 +18,7 @@ News Collector ──────┘
 4. **Deduplication** prevents duplicate URLs from being appended
 5. **Google Sheets** receives the final standardized rows
 
+
 ## Setup
 
 ### 1. Create a Virtual Environment
