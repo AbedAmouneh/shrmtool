@@ -362,3 +362,4 @@ shrmtool/
 ├── .env               # Environment variables (not committed)
 └── service_account.json # Google service account (not committed)
 ```
+
