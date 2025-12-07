@@ -41,8 +41,9 @@ def run_snscrape_search(query: str, max_results: int = 100) -> List[Dict[str, An
 
     try:
         # Run snscrape command
-        # Format: snscrape reddit-search "query" --jsonl
-        cmd = ["snscrape", "reddit-search", query, "--jsonl"]
+        # Format: snscrape --jsonl reddit-search "query"
+        # Note: Global options (--jsonl, --since, etc.) must come before the scraper name
+        cmd = ["snscrape", "--jsonl", "reddit-search", query]
 
         logger.info(f"Running snscrape for query: {query}")
         process = subprocess.run(
