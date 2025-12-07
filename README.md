@@ -64,6 +64,7 @@ Place your `service_account.json` file in the project root directory. This file 
 The Reddit collector uses `snscrape` (a command-line tool) to search Reddit for posts matching specified search terms.
 
 **Flow:**
+
 1. For each search term, runs `snscrape reddit-search "query" --jsonl` as a subprocess
 2. Parses JSONL output (one JSON object per line)
 3. Normalizes each post to extract: URL, title, date, author, score, comments, selftext
@@ -71,6 +72,7 @@ The Reddit collector uses `snscrape` (a command-line tool) to search Reddit for 
 5. Deduplicates within the collection run (same URL seen multiple times)
 
 **Normalization:**
+
 - Extracts username and builds profile link (`https://www.reddit.com/user/{username}`)
 - Parses date from various formats (ISO string, Unix timestamp)
 - Maps Reddit-specific fields: `score` → likes, `numComments` → comments, `shares` = 0
@@ -81,6 +83,7 @@ The Reddit collector uses `snscrape` (a command-line tool) to search Reddit for 
 The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 
 **Flow:**
+
 1. For each search term, makes HTTP GET requests to NewsAPI
 2. Handles pagination (fetches multiple pages if needed, up to max_results)
 3. Normalizes each article to extract: source name, title, description, URL, publishedAt
@@ -88,6 +91,7 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 5. Deduplicates within the collection run
 
 **Normalization:**
+
 - Extracts source name from nested `source` object
 - Maps NewsAPI fields: `description` → summary, `publishedAt` → date
 - Sets engagement fields to "N/A" (News articles don't have likes/comments/shares)
@@ -97,9 +101,26 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 Both collectors' normalized items go through:
 
 1. **Verdict Date Filtering**: Only items with dates >= VERDICT_DATE (in US/Eastern timezone) are kept
-2. **Deduplication**: URLs are checked against a SQLite database (`seen_urls.db`) to prevent duplicates
-3. **Schema Mapping**: Items are converted to the 17-column Google Sheet format
-4. **Google Sheets Append**: New rows are appended in batch to the first worksheet
+2. **Anchor-Based Topic Filtering**: A final safety layer that keeps only items clearly related to SHRM/JCT. Items must contain at least one of these anchor terms in their title, body, or description:
+
+   - "shrm"
+   - "society for human resource management"
+   - "johnny c. taylor"
+   - "johnny taylor"
+   - "shrm ceo"
+
+   This filter applies to both Reddit posts and News articles. Off-topic items are logged and removed before deduplication.
+
+3. **Deduplication**: URLs are checked against a SQLite database (`seen_urls.db`) to prevent duplicates
+4. **Schema Mapping**: Items are converted to the 17-column Google Sheet format
+5. **Google Sheets Append**: New rows are appended in batch to the first worksheet
+
+**Example of Topic Filtering:**
+
+- ✅ **Kept**: "SHRM CEO Johnny Taylor faces backlash after verdict" (contains "shrm" and "johnny taylor")
+- ✅ **Kept**: "Society for Human Resource Management trial update" (contains "society for human resource management")
+- ❌ **Removed**: "HR best practices for 2025" (no anchor terms, off-topic)
+- ❌ **Removed**: "General workplace discrimination discussion" (no SHRM-specific anchors)
 
 ## Running
 
@@ -108,28 +129,40 @@ Both collectors' normalized items go through:
 Activate your virtual environment and run:
 
 ```bash
-python -m main_collect --terms "SHRM,HR,verdict" --topic "SHRM Trial Verdict"
+python -m main_collect \
+  --terms "SHRM verdict,SHRM trial,SHRM lawsuit,SHRM scandal,SHRM controversy,SHRM harassment allegations,SHRM sexual harassment case,Johnny C. Taylor SHRM,SHRM CEO Johnny Taylor,Society for Human Resource Management trial,Society for Human Resource Management verdict" \
+  --topic "SHRM Trial Verdict – Public & HR Community Reaction"
+```
+
+### Recommended Search Terms
+
+For high-precision collection, use this comma-separated list:
+
+```
+SHRM verdict,SHRM trial,SHRM lawsuit,SHRM scandal,SHRM controversy,SHRM harassment allegations,SHRM sexual harassment case,Johnny C. Taylor SHRM,SHRM CEO Johnny Taylor,Society for Human Resource Management trial,Society for Human Resource Management verdict
 ```
 
 ### CLI Options
 
 ```bash
 python -m main_collect \
-  --terms "SHRM,HR,verdict" \
-  --topic "SHRM Trial Verdict" \
+  --terms "SHRM verdict,SHRM trial,SHRM lawsuit,SHRM scandal,SHRM controversy,SHRM harassment allegations,SHRM sexual harassment case,Johnny C. Taylor SHRM,SHRM CEO Johnny Taylor,Society for Human Resource Management trial,Society for Human Resource Management verdict" \
+  --topic "SHRM Trial Verdict – Public & HR Community Reaction" \
   --since 2025-12-05 \
   --dry-run \
   --max-results 50
 ```
 
 **Arguments:**
-- `--terms` (required): Comma-separated list of search terms
-- `--topic` (required): Topic label for the 'Topic' column in the sheet
+
+- `--terms` (optional): Comma-separated list of search terms. If not provided, uses collector defaults. Recommended terms listed above.
+- `--topic` (optional): Topic label for the 'Topic' column in the sheet. Default: "SHRM Trial Verdict – Public & HR Community Reaction"
 - `--since` (optional): Override verdict date filter (YYYY-MM-DD format)
 - `--dry-run` (flag): Run without writing to Google Sheets or updating dedupe store
 - `--max-results` (optional): Maximum number of items to process
 
 **Example Output:**
+
 ```
 [2025-01-15 08:00:00] INFO - Starting SHRM content collection pipeline
 [2025-01-15 08:00:00] INFO - Search terms: ['SHRM', 'HR', 'verdict']
@@ -144,25 +177,25 @@ python -m main_collect \
 
 The Google Sheet uses a standardized 17-column schema. Here's how each column is populated:
 
-| Column | Type | Description | Reddit Source | News Source |
-|-------|------|-------------|---------------|-------------|
-| **Date Posted** | String (MM/DD/YYYY) | Post/article publication date | `date` field (parsed) | `publishedAt` (parsed) |
-| **Platform** | String | Source platform name | `"Reddit"` | `"News"` |
-| **Profile** | String | Author/source identifier | `u/{username}` | `source_name` |
-| **Link (profile)** | String | Profile URL | `https://www.reddit.com/user/{username}` | `"N/A"` |
-| **Nº Of Followers** | String | Follower count | `"N/A"` | `"N/A"` |
-| **Post Link** | String | Direct URL to post/article | `url` | `url` |
-| **Topic** | String | Topic label | CLI argument | CLI argument |
-| **title** | String | Post/article title | `title` | `title` |
-| **Tone** | String | Sentiment classification | `"N/A"` | `"N/A"` |
-| **Views** | String | View count | `"N/A"` | `"N/A"` |
-| **Likes** | String | Like/upvote count | `score` | `"N/A"` |
-| **Comments** | String | Comment count | `numComments` | `"N/A"` |
-| **Shares** | String | Share/retweet count | `"0"` | `"N/A"` |
-| **Eng. Total** | String | Total engagement (likes + comments + shares) | Calculated sum | `"N/A"` |
-| **Post Summary** | String | Summary text (truncated to ~300 chars) | `selftext` or `title` | `description` |
-| **SHRM Like** | String | Manual input field | `""` (blank) | `""` (blank) |
-| **SHRM Comment** | String | Manual input field | `""` (blank) | `""` (blank) |
+| Column              | Type                | Description                                  | Reddit Source                            | News Source            |
+| ------------------- | ------------------- | -------------------------------------------- | ---------------------------------------- | ---------------------- |
+| **Date Posted**     | String (MM/DD/YYYY) | Post/article publication date                | `date` field (parsed)                    | `publishedAt` (parsed) |
+| **Platform**        | String              | Source platform name                         | `"Reddit"`                               | `"News"`               |
+| **Profile**         | String              | Author/source identifier                     | `u/{username}`                           | `source_name`          |
+| **Link (profile)**  | String              | Profile URL                                  | `https://www.reddit.com/user/{username}` | `"N/A"`                |
+| **Nº Of Followers** | String              | Follower count                               | `"N/A"`                                  | `"N/A"`                |
+| **Post Link**       | String              | Direct URL to post/article                   | `url`                                    | `url`                  |
+| **Topic**           | String              | Topic label                                  | CLI argument                             | CLI argument           |
+| **title**           | String              | Post/article title                           | `title`                                  | `title`                |
+| **Tone**            | String              | Sentiment classification                     | `"N/A"`                                  | `"N/A"`                |
+| **Views**           | String              | View count                                   | `"N/A"`                                  | `"N/A"`                |
+| **Likes**           | String              | Like/upvote count                            | `score`                                  | `"N/A"`                |
+| **Comments**        | String              | Comment count                                | `numComments`                            | `"N/A"`                |
+| **Shares**          | String              | Share/retweet count                          | `"0"`                                    | `"N/A"`                |
+| **Eng. Total**      | String              | Total engagement (likes + comments + shares) | Calculated sum                           | `"N/A"`                |
+| **Post Summary**    | String              | Summary text (truncated to ~300 chars)       | `selftext` or `title`                    | `description`          |
+| **SHRM Like**       | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
+| **SHRM Comment**    | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 
 ## Testing
 
@@ -265,6 +298,7 @@ The project includes a GitHub Actions workflow (`.github/workflows/collector.yml
 **Setup Instructions:**
 
 1. **Add Secrets to GitHub Repository:**
+
    - Go to your repository → Settings → Secrets and variables → Actions
    - Add the following secrets:
      - `NEWS_API_KEY`: Your NewsAPI.org API key
@@ -273,6 +307,7 @@ The project includes a GitHub Actions workflow (`.github/workflows/collector.yml
      - `SERVICE_ACCOUNT_JSON`: The entire contents of your `service_account.json` file (as a single-line JSON string)
 
 2. **Verify Workflow:**
+
    - Go to Actions tab in your repository
    - The workflow will run automatically at 8 AM ET daily
    - You can also trigger it manually via "Run workflow" button
@@ -327,4 +362,3 @@ shrmtool/
 ├── .env               # Environment variables (not committed)
 └── service_account.json # Google service account (not committed)
 ```
-

@@ -113,6 +113,9 @@ def _normalize_reddit_item(
             "summary": summary,
             "shrm_like": "",
             "shrm_comment": "",
+            # Preserve original text fields for topic filtering
+            "selftext": selftext,
+            "description": "",  # Not applicable for Reddit
         }
 
     except Exception as e:
@@ -169,11 +172,81 @@ def _normalize_news_item(
             "summary": description,
             "shrm_like": "",
             "shrm_comment": "",
+            # Preserve original text fields for topic filtering
+            "selftext": "",  # Not applicable for News
+            "description": description,
         }
 
     except Exception as e:
         logger.error(f"Error normalizing news article: {e}")
         return None
+
+
+def is_on_topic(item: Dict[str, Any]) -> bool:
+    """
+    Check if an item is clearly related to SHRM/JCT using anchor-based filtering.
+
+    Rules:
+    1. Anything with SHRM/Society for Human Resource Management is on-topic.
+    2. Johnny C. Taylor content is only on-topic if it also has case/verdict context
+       (verdict, trial, lawsuit, allegations, harassment, scandal, controversy, etc.).
+
+    Args:
+        item: Normalized item dictionary with title, selftext (Reddit), or description (News)
+
+    Returns:
+        True if item is on-topic, False otherwise
+    """
+    text_parts = [
+        item.get("title") or "",
+        item.get("selftext") or "",
+        item.get("description") or "",
+    ]
+    blob = " ".join(text_parts).lower()
+
+    # Core SHRM anchors
+    shrm_anchors = [
+        "shrm",
+        "society for human resource management",
+    ]
+
+    # Johnny C. Taylor name variants
+    johnny_anchors = [
+        "johnny c. taylor",
+        "johnny c taylor",
+        "johnny taylor",
+    ]
+
+    # Verdict / case context
+    case_anchors = [
+        "verdict",
+        "trial",
+        "lawsuit",
+        "suit",
+        "case",
+        "allegation",
+        "allegations",
+        "harassment",
+        "sexual harassment",
+        "scandal",
+        "controversy",
+        "misconduct",
+    ]
+
+    has_shrm = any(anchor in blob for anchor in shrm_anchors)
+    has_johnny = any(anchor in blob for anchor in johnny_anchors)
+    has_case_context = any(anchor in blob for anchor in case_anchors)
+
+    # Rules:
+    # 1) Anything with SHRM is on-topic.
+    if has_shrm:
+        return True
+
+    # 2) Johnny C. Taylor content is only on-topic if it clearly has case/verdict context.
+    if has_johnny and has_case_context:
+        return True
+
+    return False
 
 
 def _item_to_row(item: Dict[str, Any]) -> List[Any]:
@@ -351,6 +424,19 @@ def main_collect(
         logger.error(f"News Collector: Failed with error: {e}", exc_info=True)
         logger.warning("Continuing despite news collection failure")
 
+    # Apply on-topic anchor filtering (final safety layer)
+    items_before_topic_filter = len(all_items)
+    all_items = [item for item in all_items if is_on_topic(item)]
+    items_filtered_topic = items_before_topic_filter - len(all_items)
+
+    if items_filtered_topic > 0:
+        logger.info(
+            f"Topic filtering: Removed {items_filtered_topic} off-topic items, "
+            f"{len(all_items)} remain"
+        )
+    else:
+        logger.info(f"Topic filtering: All {len(all_items)} items passed topic filter")
+
     # Apply max_results limit if specified
     original_count = len(all_items)
     if max_results and len(all_items) > max_results:
@@ -459,13 +545,13 @@ def main():
     parser.add_argument(
         "--terms",
         type=str,
-        help="Comma-separated list of search terms (default: uses collector defaults)",
+        help="Comma-separated list of search terms. Recommended: 'SHRM verdict,SHRM trial,SHRM lawsuit,SHRM scandal,SHRM controversy,SHRM harassment allegations,SHRM sexual harassment case,Johnny C. Taylor SHRM,SHRM CEO Johnny Taylor,Society for Human Resource Management trial,Society for Human Resource Management verdict'",
     )
     parser.add_argument(
         "--topic",
         type=str,
-        default="SHRM Trial Verdict",
-        help="Topic label for the 'Topic' column in the sheet",
+        default="SHRM Trial Verdict – Public & HR Community Reaction",
+        help="Topic label for the 'Topic' column in the sheet. Default: 'SHRM Trial Verdict – Public & HR Community Reaction'",
     )
     parser.add_argument(
         "--since",

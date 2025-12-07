@@ -4,40 +4,42 @@ on:
   schedule:
     # Run daily at 8 AM ET (13:00 UTC)
     - cron: "0 13 * * *"
-  workflow_dispatch:  # Allow manual runs
+  workflow_dispatch: # Allow manual runs
 
 jobs:
   run-collector:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-      
+          python-version: "3.9"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: Write service account JSON
         env:
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
         run: |
           echo "$SERVICE_ACCOUNT_JSON" > service_account.json
-      
+
       - name: Run collector
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           VERDICT_DATE: ${{ secrets.VERDICT_DATE }}
         run: |
-          python -m main_collect --terms "SHRM,HR,verdict" --topic "SHRM Trial Verdict"
-      
+          python -m main_collect \
+            --terms "SHRM verdict,SHRM trial,SHRM lawsuit,SHRM scandal,SHRM controversy,SHRM harassment allegations,SHRM sexual harassment case,Johnny C. Taylor SHRM,SHRM CEO Johnny Taylor,Society for Human Resource Management trial,Society for Human Resource Management verdict" \
+            --topic "SHRM Trial Verdict – Public & HR Community Reaction"
+
       - name: Upload logs (if available)
         if: always()
         uses: actions/upload-artifact@v3
@@ -48,4 +50,3 @@ jobs:
             service_account.json
           retention-days: 7
           if-no-files-found: ignore
-
