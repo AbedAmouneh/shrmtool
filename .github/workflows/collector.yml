@@ -42,7 +42,7 @@ jobs:
 
       - name: Upload logs (if available)
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: collector-logs
           path: |
