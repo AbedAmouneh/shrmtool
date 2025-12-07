@@ -18,6 +18,9 @@ from collectors.news_collector import collect_news_articles
 from integrations.google_sheets import append_rows
 from integrations.dedupe_store import has_seen, mark_seen
 
+# Import notifications
+from notifications.telegram_notifier import send_telegram_message
+
 # Import utils
 from utils.config import VERDICT_DATE
 from utils.time_utils import (
@@ -605,10 +608,27 @@ def main():
             max_results=args.max_results,
             verdict_date_override=args.since,
         )
+        # Summary log
         if args.dry_run:
-            logger.info(f"DRY RUN: Would have appended {count} rows to Google Sheet")
+            logger.info(
+                "DRY RUN: Would have appended %s rows to Google Sheet", count
+            )
         else:
-            logger.info(f"Successfully appended {count} rows to Google Sheet")
+            logger.info("Appended %s rows to Google Sheet", count)
+
+        # 🔔 Telegram notification (only on real runs, only if something new)
+        if not args.dry_run and count > 0:
+            try:
+                msg = (
+                    "✅ <b>SHRM pipeline update</b>\n"
+                    f"Topic: <b>{args.topic.strip()}</b>\n"
+                    f"New items: <b>{count}</b>\n"
+                    f"Terms: {', '.join(search_terms)}"
+                )
+                send_telegram_message(msg)
+            except Exception as e:
+                logger.error("Failed to send Telegram notification: %s", e)
+
         sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
