@@ -1,0 +1,33 @@
+# Environment variables
+.env
+
+# Service account credentials
+service_account.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# SQLite database
+*.db
+seen_urls.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
