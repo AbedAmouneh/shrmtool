@@ -13,6 +13,7 @@ from datetime import datetime
 # Import collectors
 from collectors.reddit_collector import collect_reddit_posts
 from collectors.news_collector import collect_news_articles
+from collectors.x_collector import collect_twitter_posts
 
 # Import integrations
 from integrations.google_sheets import append_rows
@@ -346,6 +347,13 @@ def main_collect(
         "normalized": 0,
         "errors": 0,
     }
+    twitter_stats = {
+        "raw_collected": 0,
+        "filtered_date": 0,
+        "filtered_dedupe": 0,
+        "normalized": 0,
+        "errors": 0,
+    }
 
     # Collect Reddit posts
     reddit_success = False
@@ -427,6 +435,45 @@ def main_collect(
         logger.error(f"News Collector: Failed with error: {e}", exc_info=True)
         logger.warning("Continuing despite news collection failure")
 
+    # Collect Twitter posts
+    twitter_success = False
+    try:
+        logger.info("--- Twitter Collector: Starting ---")
+        twitter_posts = collect_twitter_posts(
+            search_terms=search_terms,
+            topic=topic,
+            verdict_date_override=verdict_date_override,
+        )
+        twitter_stats["raw_collected"] = len(twitter_posts)
+        logger.info(f"Twitter: Collected {twitter_stats['raw_collected']} raw posts")
+
+        for tweet in twitter_posts:
+            url = tweet.get("post_link")
+            if not url:
+                continue
+
+            # Global dedupe
+            if has_seen(url):
+                twitter_stats["filtered_dedupe"] += 1
+                continue
+
+            all_items.append(tweet)
+            new_urls.append(url)
+            twitter_stats["normalized"] += 1
+
+        logger.info(
+            f"Twitter: {twitter_stats['normalized']} normalized, "
+            f"{twitter_stats['filtered_date']} filtered by date, "
+            f"{twitter_stats['filtered_dedupe']} filtered by dedupe"
+        )
+        logger.info("--- Twitter Collector: Completed ---")
+        twitter_success = True
+
+    except Exception as e:
+        twitter_stats["errors"] = 1
+        logger.error(f"Twitter Collector: Failed with error: {e}", exc_info=True)
+        logger.warning("Continuing despite Twitter collection failure")
+
     # Apply on-topic anchor filtering (final safety layer)
     items_before_topic_filter = len(all_items)
     all_items = [item for item in all_items if is_on_topic(item)]
@@ -451,12 +498,18 @@ def main_collect(
     rows = [_item_to_row(item) for item in all_items]
 
     # Calculate summary statistics
-    total_raw = reddit_stats["raw_collected"] + news_stats["raw_collected"]
+    total_raw = (
+        reddit_stats["raw_collected"]
+        + news_stats["raw_collected"]
+        + twitter_stats["raw_collected"]
+    )
     total_filtered = (
         reddit_stats["filtered_date"]
         + reddit_stats["filtered_dedupe"]
         + news_stats["filtered_date"]
         + news_stats["filtered_dedupe"]
+        + twitter_stats["filtered_date"]
+        + twitter_stats["filtered_dedupe"]
     )
     total_normalized = len(rows)
 
@@ -465,12 +518,15 @@ def main_collect(
     logger.info(f"  Total raw items collected: {total_raw}")
     logger.info(f"    - Reddit: {reddit_stats['raw_collected']} raw")
     logger.info(f"    - News: {news_stats['raw_collected']} raw")
+    logger.info(f"    - Twitter: {twitter_stats['raw_collected']} raw")
     logger.info(f"  Total items filtered out: {total_filtered}")
     logger.info(
-        f"    - Filtered by date: {reddit_stats['filtered_date'] + news_stats['filtered_date']}"
+        f"    - Filtered by date: "
+        f"{reddit_stats['filtered_date'] + news_stats['filtered_date'] + twitter_stats['filtered_date']}"
     )
     logger.info(
-        f"    - Filtered by dedupe: {reddit_stats['filtered_dedupe'] + news_stats['filtered_dedupe']}"
+        f"    - Filtered by dedupe: "
+        f"{reddit_stats['filtered_dedupe'] + news_stats['filtered_dedupe'] + twitter_stats['filtered_dedupe']}"
     )
     logger.info(f"  Total items normalized: {total_normalized}")
     if max_results and original_count > max_results:
@@ -610,9 +666,7 @@ def main():
         )
         # Summary log
         if args.dry_run:
-            logger.info(
-                "DRY RUN: Would have appended %s rows to Google Sheet", count
-            )
+            logger.info("DRY RUN: Would have appended %s rows to Google Sheet", count)
         else:
             logger.info("Appended %s rows to Google Sheet", count)
 

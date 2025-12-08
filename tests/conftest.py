@@ -83,3 +83,17 @@ def mock_service_account_path(tmp_path):
     service_account_file.write_text('{"type": "service_account"}')
     return service_account_file
 
+
+@pytest.fixture(autouse=True)
+def mock_twitter_collector(monkeypatch):
+    """
+    Autouse fixture to mock Twitter collector in tests that don't care about it.
+    Returns an empty list to keep existing tests stable.
+    """
+    try:
+        import main_collect
+
+        monkeypatch.setattr(main_collect, "collect_twitter_posts", lambda *args, **kwargs: [])
+    except ImportError:
+        pass
+

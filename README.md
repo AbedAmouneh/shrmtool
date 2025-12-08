@@ -97,6 +97,33 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 - Maps NewsAPI fields: `description` → summary, `publishedAt` → date
 - Sets engagement fields to "N/A" (News articles don't have likes/comments/shares)
 
+### X Collector
+
+The X (Twitter) collector uses the X API v2 Recent Search endpoint to fetch tweets.
+
+**Env vars:**
+- `X_BEARER_TOKEN`: X API bearer token
+
+**Flow:**
+1. For each search term, calls `https://api.twitter.com/2/tweets/search/recent`
+2. Requests `tweet.fields=created_at,public_metrics,text` and `expansions=author_id` with `user.fields=username,public_metrics`
+3. Normalizes each tweet to SHRM schema:
+   - Platform: `X`
+   - URL: `https://twitter.com/i/web/status/{tweet_id}`
+   - Profile: `@username`, Profile link: `https://x.com/{username}`
+   - Followers: `followers_count` (or `"N/A"`)
+   - Likes: `like_count`
+   - Comments: `reply_count`
+   - Shares: `retweet_count + quote_count`
+   - Eng. Total: likes + comments + shares
+   - Views: `impression_count` if available, else `"N/A"`
+   - Title: first ~160 chars of text
+   - Post Summary: same as title
+   - SHRM Like / SHRM Comment: `"N/A"`
+4. Filters by verdict date using `is_after_verdict_date`
+5. Deduplicates within the run (same tweet URL only once)
+6. Errors are logged but non-fatal (continues to next query)
+
 ### Shared Processing
 
 Both collectors' normalized items go through:
