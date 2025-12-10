@@ -499,6 +499,7 @@ class TestMainCollectRowStructure:
             "description": "SHRM news description",
             "source_name": "Reuters",
             "publishedAt": "2025-12-06T10:00:00Z",
+            "author": "Jane Reporter",
         }
 
         with patch("main_collect.collect_reddit_posts", return_value=[]), patch(
@@ -515,15 +516,52 @@ class TestMainCollectRowStructure:
         row = rows[0]
 
         assert row[1] == "News"  # Platform
-        assert row[2] == "N/A"  # Profile Link
+        assert row[2] == "Reuters"  # Profile (source)
         assert row[3] == "N/A"  # Followers
         assert row[4] == "https://news.com/article/1"  # Post Link
         assert row[5] == "Test Topic"  # Topic title
-        assert row[6] == "SHRM news description"  # Summary
+        assert "Source: Reuters" in row[6]  # Summary includes source
+        assert "Jane Reporter" in row[6]  # Summary includes author
         assert row[7] == "N/A"  # Tone
         assert row[10] == "N/A"  # Likes
         assert row[11] == "N/A"  # Comments
         assert row[13] == "N/A"  # Eng. Total
+
+
+    def test_news_profile_fallback_to_domain_when_source_missing(
+        self, mock_config, mock_canonical_dedupe
+    ):
+        """If source_name is missing, profile should fall back to URL domain."""
+        news_article = {
+            "url": "https://biztoc.com/article/123",
+            "title": "SHRM News Title",
+            "description": "Desc",
+            "publishedAt": "2025-12-06T10:00:00Z",
+            "author": "",
+            "source_name": "",
+        }
+
+        with patch("main_collect.collect_reddit_posts", return_value=[]), patch(
+            "main_collect.collect_news_articles", return_value=[news_article]
+        ), patch("main_collect.has_seen", return_value=False), patch(
+            "main_collect.append_rows"
+        ) as mock_append, patch(
+            "main_collect.mark_seen"
+        ):
+
+            main_collect.main_collect(["test"], "Test Topic")
+
+        rows = mock_append.call_args[0][0]
+        row = rows[0]
+
+        assert row[1] == "News"
+        assert "biztoc.com" in row[2]
+        assert row[3] == "N/A"
+        assert row[10] == "N/A"
+        assert row[11] == "N/A"
+        assert row[13] == "N/A"
+        # No author/source so summary should not include them beyond base description
+        assert row[6].startswith("Desc")
 
 
 class TestMainCollectTopicFiltering:

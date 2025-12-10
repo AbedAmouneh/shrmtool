@@ -186,7 +186,8 @@ def _normalize_news_item(
         date_posted = format_date_mmddyyyy(article_date)
 
         # Extract fields
-        source_name = article.get("source_name", "") or "N/A"
+        source_name = article.get("source_name", "") or ""
+        author = article.get("author", "") or ""
         url = article.get("url", "")
 
         # Validate URL
@@ -197,16 +198,39 @@ def _normalize_news_item(
         title = article.get("title", "") or "N/A"
         description = article.get("description", "") or "N/A"
 
+        # Compute profile/source fallback using domain if needed
+        if source_name:
+            profile_value = source_name
+        else:
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(url)
+                profile_value = parsed.netloc or "N/A"
+            except Exception:
+                profile_value = "N/A"
+
+        # Build summary with optional source/author suffix
+        base_summary = description or ""
+        suffix = ""
+        if source_name and author:
+            suffix = f" (Source: {source_name} – by {author})"
+        elif source_name:
+            suffix = f" (Source: {source_name})"
+        elif author:
+            suffix = f" (By {author})"
+        post_summary = (base_summary + suffix).strip()
+
         item = {
             "date_posted": date_posted,
             "platform": "News",
-            "profile": source_name,
-            "profile_link": "N/A",
+            "profile": profile_value or "N/A",
+            "profile_link": profile_value or "N/A",
             "followers": "N/A",
             "post_link": url,
             "topic": topic,
             "title": title,
-            "summary": description,
+            "summary": post_summary,
             "tone": "N/A",
             "category": "",
             "views": "N/A",
@@ -220,6 +244,8 @@ def _normalize_news_item(
             # Preserve original text fields for topic filtering
             "selftext": "",
             "description": description,
+            "source_name": source_name or "",
+            "author": author,
         }
 
         # Apply platform defaults and validate

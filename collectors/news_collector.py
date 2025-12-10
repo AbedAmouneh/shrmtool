@@ -139,7 +139,7 @@ def normalize_news_article(article_data: Dict[str, Any]) -> Dict[str, Any]:
 
     Returns:
         Normalized dictionary with fields: source_name, title, description,
-        url, publishedAt
+        url, publishedAt, author
     """
     # Extract source name
     source = article_data.get("source", {})
@@ -154,6 +154,7 @@ def normalize_news_article(article_data: Dict[str, Any]) -> Dict[str, Any]:
     )
     url = article_data.get("url", "")
     published_at = article_data.get("publishedAt", "")
+    author = article_data.get("author", "") or ""
 
     return {
         "source_name": source_name,
@@ -161,6 +162,7 @@ def normalize_news_article(article_data: Dict[str, Any]) -> Dict[str, Any]:
         "description": description,
         "url": url,
         "publishedAt": published_at,
+        "author": author,
     }
 
 

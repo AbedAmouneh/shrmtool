@@ -286,6 +286,7 @@ class TestCollectNewsArticles:
         assert article["source_name"] == "Reuters"
         assert article["title"] == "SHRM Trial Verdict Announced"
         assert article["description"] == "The verdict in the SHRM discrimination case..."
+        assert article["author"] == "John Doe"
         assert article["url"] == "https://reuters.com/shrm-verdict"
         assert article["publishedAt"] == "2025-12-06T10:30:00Z"
     
