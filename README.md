@@ -10,6 +10,7 @@ The pipeline follows a simple data flow architecture:
 Reddit Collector ───┐
                      ├── Normalize → Filter → Dedupe → Sheets Append
 News Collector ──────┘
+
 ```
 
 1. **Collectors** fetch raw content from Reddit (via snscrape) and NewsAPI
