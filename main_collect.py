@@ -27,6 +27,7 @@ from integrations.dedupe_store import (
 
 # Import notifications
 from notifications.telegram_notifier import send_telegram_message
+from notifications.message_builder import build_telegram_summary
 
 # Import utils
 from utils.config import VERDICT_DATE
@@ -51,6 +52,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# Stores the last run summary for downstream consumers (e.g., notifications).
+LAST_RUN_SUMMARY: Optional[Dict[str, Any]] = None
 
 
 def _normalize_reddit_item(
@@ -642,6 +646,31 @@ def main_collect(
             f"Row validation: {validation_failures} rows failed validation and were skipped"
         )
 
+    # Aggregate counts for notification/summary
+    dedupe_filtered_total = (
+        reddit_stats["filtered_dedupe"]
+        + news_stats["filtered_dedupe"]
+        + twitter_stats["filtered_dedupe"]
+    )
+    offtopic_filtered = (
+        topic_classifications["borderline"] + topic_classifications["off_topic"]
+    )
+    news_appended_count = sum(1 for r in rows if r[1] == "News")
+    twitter_appended_count = sum(1 for r in rows if r[1] in ("X", "Twitter"))
+    repost_appended_count = sum(1 for r in rows if str(r[8]).lower() == "repost")
+
+    global LAST_RUN_SUMMARY
+    LAST_RUN_SUMMARY = {
+        "total_new": len(rows),
+        "news_appended": news_appended_count,
+        "twitter_appended": twitter_appended_count,
+        "repost_appended": repost_appended_count,
+        "dedupe_filtered": dedupe_filtered_total,
+        "offtopic_filtered": offtopic_filtered,
+        "topic_classifications": topic_classifications,
+        "validation_failures": validation_failures,
+    }
+
     # Calculate summary statistics
     total_raw = (
         reddit_stats["raw_collected"]
@@ -827,11 +856,16 @@ def main():
         # 🔔 Telegram notification (only on real runs, only if something new)
         if not args.dry_run and count > 0:
             try:
-                msg = (
-                    "✅ <b>SHRM pipeline update</b>\n"
-                    f"Topic: <b>{args.topic.strip()}</b>\n"
-                    f"New items: <b>{count}</b>\n"
-                    f"Terms: {', '.join(search_terms)}"
+                summary = LAST_RUN_SUMMARY or {}
+                msg = build_telegram_summary(
+                    topic=args.topic.strip(),
+                    search_terms=search_terms,
+                    total_new=count,
+                    news_count=summary.get("news_appended", 0),
+                    twitter_count=summary.get("twitter_appended", 0),
+                    repost_count=summary.get("repost_appended", 0),
+                    dedupe_count=summary.get("dedupe_filtered", 0),
+                    offtopic_count=summary.get("offtopic_filtered", 0),
                 )
                 send_telegram_message(msg)
             except Exception as e:

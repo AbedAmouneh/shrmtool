@@ -6,6 +6,7 @@ deduplication, and Google Sheets appending.
 """
 
 import pytest
+import sys
 from unittest.mock import patch, MagicMock, Mock
 from datetime import datetime
 import pytz
@@ -729,6 +730,127 @@ class TestMainCollectTopicFiltering:
             "harassment" in s.lower() or "johnny c. taylor" in s.lower()
             for s in summaries
         )
+
+
+class TestTelegramNotifications:
+    """Tests for Telegram notification flow."""
+
+    def test_notification_sent_when_new_items(
+        self, mock_config, mock_canonical_dedupe, monkeypatch
+    ):
+        reddit_post = {
+            "url": "https://reddit.com/r/test/post1",
+            "title": "SHRM trial verdict discussion",
+            "username": "user1",
+            "score": 1,
+            "numComments": 0,
+            "date": "2025-12-06T10:00:00Z",
+            "selftext": "SHRM verdict update",
+            "subreddit": "test",
+        }
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["main_collect.py", "--terms", "SHRM verdict", "--topic", "Daily Topic"],
+        )
+
+        with patch(
+            "main_collect.collect_reddit_posts", return_value=[reddit_post]
+        ), patch("main_collect.collect_news_articles", return_value=[]), patch(
+            "main_collect.has_seen", return_value=False
+        ), patch(
+            "main_collect.append_rows"
+        ), patch(
+            "main_collect.mark_seen"
+        ), patch(
+            "main_collect.mark_seen_canonical"
+        ), patch(
+            "main_collect.send_telegram_message"
+        ) as mock_send, patch(
+            "main_collect.build_telegram_summary", return_value="MSG"
+        ) as mock_builder:
+
+            with pytest.raises(SystemExit):
+                main_collect.main()
+
+        mock_send.assert_called_once_with("MSG")
+        mock_builder.assert_called_once()
+
+    def test_notification_skipped_on_dry_run(
+        self, mock_config, mock_canonical_dedupe, monkeypatch
+    ):
+        reddit_post = {
+            "url": "https://reddit.com/r/test/post1",
+            "title": "SHRM trial verdict discussion",
+            "username": "user1",
+            "score": 1,
+            "numComments": 0,
+            "date": "2025-12-06T10:00:00Z",
+            "selftext": "SHRM verdict update",
+            "subreddit": "test",
+        }
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "main_collect.py",
+                "--terms",
+                "SHRM verdict",
+                "--topic",
+                "Daily Topic",
+                "--dry-run",
+            ],
+        )
+
+        with patch(
+            "main_collect.collect_reddit_posts", return_value=[reddit_post]
+        ), patch("main_collect.collect_news_articles", return_value=[]), patch(
+            "main_collect.has_seen", return_value=False
+        ), patch(
+            "main_collect.append_rows"
+        ), patch(
+            "main_collect.mark_seen"
+        ), patch(
+            "main_collect.mark_seen_canonical"
+        ), patch(
+            "main_collect.send_telegram_message"
+        ) as mock_send:
+
+            with pytest.raises(SystemExit):
+                main_collect.main()
+
+        mock_send.assert_not_called()
+
+    def test_notification_skipped_when_no_new_items(
+        self, mock_config, mock_canonical_dedupe, monkeypatch
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["main_collect.py", "--terms", "SHRM verdict", "--topic", "Daily Topic"],
+        )
+
+        with patch("main_collect.collect_reddit_posts", return_value=[]), patch(
+            "main_collect.collect_news_articles", return_value=[]
+        ), patch("main_collect.has_seen", return_value=False), patch(
+            "main_collect.append_rows"
+        ), patch(
+            "main_collect.mark_seen"
+        ), patch(
+            "main_collect.mark_seen_canonical"
+        ), patch(
+            "main_collect.send_telegram_message"
+        ) as mock_send:
+
+            with pytest.raises(SystemExit):
+                main_collect.main()
+
+        mock_send.assert_not_called()
 
     def test_topic_filter_various_anchors(self, mock_config):
         """Test that all anchor terms work correctly with refined logic."""
