@@ -94,9 +94,12 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 
 **Normalization:**
 
-- Extracts source name from nested `source` object
+- Extracts source name from nested `source` object (e.g., "Business Insider", "Reuters")
+- Extracts author name if available from NewsAPI response
 - Maps NewsAPI fields: `description` → summary, `publishedAt` → date
 - Sets engagement fields to "N/A" (News articles don't have likes/comments/shares)
+- Profile column shows the news source name (or falls back to URL domain if source is missing)
+- Post Summary includes source attribution: `"Description text (Source: Business Insider – by Jack Newsham)"` or `"Description text (Source: Business Insider)"` if author is missing
 
 ### X Collector
 
@@ -212,7 +215,7 @@ The Google Sheet uses a standardized 17-column schema. Here's how each column is
 | ------------------- | ------------------- | -------------------------------------------- | ---------------------------------------- | ---------------------- |
 | **Date Posted**     | String (MM/DD/YYYY) | Post/article publication date                | `date` field (parsed)                    | `publishedAt` (parsed) |
 | **Platform**        | String              | Source platform name                         | `"Reddit"`                               | `"News"`               |
-| **Profile**         | String              | Author/source identifier                     | `u/{username}`                           | `source_name`          |
+| **Profile**         | String              | Author/source identifier                     | `u/{username}`                           | `source_name` (or URL domain fallback) |
 | **Link (profile)**  | String              | Profile URL                                  | `https://www.reddit.com/user/{username}` | `"N/A"`                |
 | **Nº Of Followers** | String              | Follower count                               | `"N/A"`                                  | `"N/A"`                |
 | **Post Link**       | String              | Direct URL to post/article                   | `url`                                    | `url`                  |
@@ -224,7 +227,7 @@ The Google Sheet uses a standardized 17-column schema. Here's how each column is
 | **Comments**        | String              | Comment count                                | `numComments`                            | `"N/A"`                |
 | **Shares**          | String              | Share/retweet count                          | `"0"`                                    | `"N/A"`                |
 | **Eng. Total**      | String              | Total engagement (likes + comments + shares) | Calculated sum                           | `"N/A"`                |
-| **Post Summary**    | String              | Summary text (truncated to ~300 chars)       | `selftext` or `title`                    | `description`          |
+| **Post Summary**    | String              | Summary text (truncated to ~300 chars)       | `selftext` or `title`                    | `description` + `(Source: {source} – by {author})` |
 | **SHRM Like**       | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 | **SHRM Comment**    | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 
@@ -284,7 +287,9 @@ Each platform has specific rules enforced during normalization:
 - **News**:
   - Metrics (Views, Likes, Comments, Shares, Eng. Total): Always "N/A"
   - Followers: Always "N/A"
+  - Profile (col 3): News source name (e.g., "Business Insider", "Reuters") from `source.name`, or URL domain (e.g., "biztoc.com") if source is missing
   - Profile Link: "N/A" (no profile URLs for news sources)
+  - Post Summary: Description text with source attribution suffix: `"(Source: {source} – by {author})"` when both are available, or `"(Source: {source})"` when only source is available
 - **X (Twitter)**:
   - Metrics: Must be numeric (parsed from API responses)
   - Followers: Numeric if available, "N/A" if not
@@ -308,6 +313,15 @@ Each platform has specific rules enforced during normalization:
 
 - NewsAPI may return the same article from multiple sources; only the first one (by canonical URL) is kept
 - Articles with invalid or missing URLs are skipped
+
+**How are News articles displayed in the sheet?**
+
+- **Profile column**: Shows the news source name (e.g., "Business Insider", "Reuters") from NewsAPI's `source.name` field
+- If `source.name` is missing, the Profile column falls back to the URL domain (e.g., "biztoc.com")
+- **Post Summary**: Includes source attribution at the end:
+  - `"Article description... (Source: Business Insider – by Jack Newsham)"` when both source and author are available
+  - `"Article description... (Source: Business Insider)"` when only source is available
+  - `"Article description..."` when neither is available
 
 **Why are some social posts tagged as "Repost"?**
 
@@ -352,6 +366,7 @@ Tests are organized in the `tests/` directory:
 - **`tests/test_schema.py`** - Schema build/validation helpers
 - **`tests/test_dedupe_behavior.py`** - Canonical dedupe and repost tagging
 - **`tests/test_topic_classification.py`** - Topic classification (on/borderline/off-topic)
+- **`tests/test_notifications_message.py`** - Telegram message builder and notification helpers
 
 ### Mocking Strategy
 
@@ -373,6 +388,7 @@ All external services are mocked to ensure tests are fast, deterministic, and do
   - Tests verify `has_seen()` and `mark_seen()` behavior
 - **Service account**: `Path.exists()` is mocked to avoid file system checks
 - **Canonical dedupe**: Tests mock `has_seen_canonical*`/`mark_seen_canonical` to avoid touching real SQLite
+- **Telegram notifications**: `send_telegram_message` is mocked to avoid real API calls
 
 ### Optional: Coverage
 
@@ -452,6 +468,29 @@ VERDICT_DATE=2025-12-05
 
 For GitHub Actions, these are provided via secrets (see above).
 
+**Optional: Telegram Notifications**
+
+The pipeline can send detailed daily intake summaries via Telegram when new items are appended:
+
+- **Env vars** (optional):
+  - `TELEGRAM_BOT_TOKEN`: Bot token from BotFather
+  - `TELEGRAM_CHAT_ID`: Your chat ID (integer or string)
+
+- **Notification behavior**:
+  - Only sent when not in `--dry-run` mode
+  - Only sent when at least one new row was appended
+  - Includes detailed statistics: platform breakdown (News/X/Reddit), repost counts, dedupe counts, off-topic filtering stats
+  - Formatted as HTML for rich display in Telegram
+
+- **Message format**: The notification includes:
+  - Total new items added
+  - Breakdown by platform (News, X/Twitter, Reddit)
+  - Reposts detected and filtered
+  - Duplicates removed
+  - Off-topic items discarded
+  - Focus topics and search terms used
+  - Automated checks passed (URL canonicalization, schema validation, metric normalization, etc.)
+
 **Service Account Setup:**
 
 - **Local/Server**: Place `service_account.json` in the project root
@@ -472,7 +511,14 @@ shrmtool/
 │   ├── config.py
 │   ├── time_utils.py
 │   ├── sentiment.py
-│   └── summary.py
+│   ├── summary.py
+│   ├── metrics.py
+│   ├── schema.py
+│   ├── url_utils.py
+│   └── platform_rules.py
+├── notifications/      # Notification services
+│   ├── telegram_notifier.py
+│   └── message_builder.py
 ├── tests/              # Test suite
 │   ├── conftest.py
 │   ├── test_*.py
