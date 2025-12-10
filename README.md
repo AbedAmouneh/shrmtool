@@ -13,6 +13,7 @@ News Collector ──────┘
 
 ```
 
+
 1. **Collectors** fetch raw content from Reddit (via snscrape) and NewsAPI
 2. **Normalization** converts items into a unified 17-column schema
 3. **Filtering** removes items before the verdict date
