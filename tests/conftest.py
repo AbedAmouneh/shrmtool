@@ -16,6 +16,7 @@ class DummyResponse:
     - .text: message string
     - .json(): raises so APIError falls back to using .text
     """
+
     def __init__(self, text: str):
         self.text = text
 
@@ -32,10 +33,10 @@ def mock_env_vars(monkeypatch):
         "SHEET_ID": "test_sheet_id_12345",
         "VERDICT_DATE": "2025-12-05",
     }
-    
+
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
-    
+
     return env_vars
 
 
@@ -45,23 +46,24 @@ def mock_config(mock_env_vars, monkeypatch):
     # Reload config module to pick up new env vars
     import importlib
     import utils.config
-    
+
     # Force reload to get new env vars
     importlib.reload(utils.config)
-    
+
     # Also reload time_utils to pick up new VERDICT_DATE from config
     # This is needed because time_utils imports VERDICT_DATE at module level
     try:
         import utils.time_utils
+
         importlib.reload(utils.time_utils)
     except ImportError:
         pass  # time_utils might not be imported yet
-    
+
     # Mock service account path to avoid file existence checks
     mock_path = MagicMock(spec=Path)
     mock_path.exists.return_value = True
     monkeypatch.setattr(utils.config, "SERVICE_ACCOUNT_PATH", mock_path)
-    
+
     return {
         "NEWS_API_KEY": mock_env_vars["NEWS_API_KEY"],
         "SHEET_ID": mock_env_vars["SHEET_ID"],
@@ -93,7 +95,39 @@ def mock_twitter_collector(monkeypatch):
     try:
         import main_collect
 
-        monkeypatch.setattr(main_collect, "collect_twitter_posts", lambda *args, **kwargs: [])
+        monkeypatch.setattr(
+            main_collect, "collect_twitter_posts", lambda *args, **kwargs: []
+        )
     except ImportError:
         pass
 
+
+@pytest.fixture
+def mock_canonical_dedupe(monkeypatch):
+    """
+    Fixture to mock canonical URL deduplication functions.
+    By default, returns False (not seen) for all checks.
+    """
+    try:
+        import main_collect
+
+        def mock_has_seen_canonical(canonical_url, platform, profile=None):
+            return (False, None)
+
+        def mock_has_seen_canonical_by_platform(canonical_url, platform):
+            return False
+
+        def mock_mark_seen_canonical(*args, **kwargs):
+            pass
+
+        monkeypatch.setattr(main_collect, "has_seen_canonical", mock_has_seen_canonical)
+        monkeypatch.setattr(
+            main_collect,
+            "has_seen_canonical_by_platform",
+            mock_has_seen_canonical_by_platform,
+        )
+        monkeypatch.setattr(
+            main_collect, "mark_seen_canonical", mock_mark_seen_canonical
+        )
+    except ImportError:
+        pass

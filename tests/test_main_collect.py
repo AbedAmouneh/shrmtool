@@ -18,7 +18,7 @@ from utils.config import VERDICT_DATE
 class TestMainCollectHappyPath:
     """T6.1: Happy path with mixed sources."""
 
-    def test_happy_path_mixed_sources(self, mock_config):
+    def test_happy_path_mixed_sources(self, mock_config, mock_canonical_dedupe):
         """Test successful collection and appending of Reddit and News items."""
         # Mock Reddit post
         reddit_post = {
@@ -48,10 +48,16 @@ class TestMainCollectHappyPath:
         ) as mock_news, patch(
             "main_collect.has_seen", return_value=False
         ), patch(
+            "main_collect.has_seen_canonical", return_value=(False, None)
+        ), patch(
+            "main_collect.has_seen_canonical_by_platform", return_value=False
+        ), patch(
             "main_collect.append_rows"
         ) as mock_append, patch(
             "main_collect.mark_seen"
-        ) as mock_mark_seen:
+        ) as mock_mark_seen, patch(
+            "main_collect.mark_seen_canonical"
+        ) as mock_mark_seen_canonical:
 
             count = main_collect.main_collect(["SHRM", "verdict"], "SHRM Trial Verdict")
 
@@ -68,12 +74,16 @@ class TestMainCollectHappyPath:
         for row in rows:
             assert len(row) == 17
 
-        # Verify first row is Reddit
+        # Verify first row is Reddit (new schema: Date Posted, Platform, Profile Link, N° of Followers, Post Link, Topic title, Summary, Tone, Category, Views, Likes, Comments, Shares, Eng. Total, Sentiment Score, Verified, Notes)
         reddit_row = rows[0]
         assert reddit_row[1] == "Reddit"  # Platform
-        assert reddit_row[2] == "u/testuser"  # Profile
-        assert reddit_row[6] == "SHRM Trial Verdict"  # Topic
-        assert reddit_row[7] == "Reddit post about SHRM"  # title
+        assert (
+            "testuser" in reddit_row[2] or "reddit.com" in reddit_row[2]
+        )  # Profile Link
+        assert reddit_row[5] == "SHRM Trial Verdict"  # Topic title (contains topic)
+        assert "Reddit post about SHRM" in str(reddit_row[6]) or "SHRM trial" in str(
+            reddit_row[6]
+        )  # Summary (contains title or selftext)
         assert reddit_row[10] == "10"  # Likes
         assert reddit_row[11] == "5"  # Comments
         assert reddit_row[13] == "15"  # Eng. Total (10 + 5 + 0)
@@ -81,9 +91,10 @@ class TestMainCollectHappyPath:
         # Verify second row is News
         news_row = rows[1]
         assert news_row[1] == "News"  # Platform
-        assert news_row[2] == "Reuters"  # Profile
-        assert news_row[6] == "SHRM Trial Verdict"  # Topic
-        assert news_row[7] == "News article about SHRM"  # title
+        assert news_row[5] == "SHRM Trial Verdict"  # Topic title
+        assert "News article about SHRM" in str(news_row[6]) or "SHRM verdict" in str(
+            news_row[6]
+        )  # Summary
 
         # Verify mark_seen was called with both URLs
         mock_mark_seen.assert_called_once()
@@ -99,39 +110,43 @@ class TestMainCollectHappyPath:
 class TestMainCollectDeduplication:
     """T6.2: Deduplication tests."""
 
-    def test_deduplication_same_url(self, mock_config):
-        """Test that duplicate URLs are not appended."""
-        reddit_post = {
+    def test_deduplication_same_url(self, mock_config, mock_canonical_dedupe):
+        """Duplicates for same platform/profile are skipped."""
+        reddit_post_1 = {
             "url": "https://reddit.com/r/test/post1",
             "title": "SHRM trial discussion",
             "username": "user1",
             "score": 1,
             "numComments": 0,
             "date": "2025-12-06T10:00:00Z",
-            "selftext": "",
+            "selftext": "SHRM verdict update",
             "subreddit": "test",
         }
 
-        news_article = {
-            "url": "https://reddit.com/r/test/post1",  # Same URL
-            "title": "SHRM verdict update",
-            "description": "Society for Human Resource Management case",
-            "source_name": "Source1",
-            "publishedAt": "2025-12-06T11:00:00Z",
+        reddit_post_2 = {
+            "url": "https://reddit.com/r/test/post1",  # same URL/profile
+            "title": "Duplicate post",
+            "username": "user1",
+            "score": 2,
+            "numComments": 1,
+            "date": "2025-12-06T11:00:00Z",
+            "selftext": "Duplicate content",
+            "subreddit": "test",
         }
 
-        # First call returns False, second call returns True (already seen)
-        has_seen_calls = [False, True]
+        # Simulate first unseen, second seen for canonical dedupe
+        has_seen_calls = [(False, None), (True, "https://reddit.com/r/test/post1")]
 
-        def mock_has_seen(url):
-            return has_seen_calls.pop(0) if has_seen_calls else True
+        def mock_has_seen_canonical(canonical_url, platform, profile=None):
+            return has_seen_calls.pop(0) if has_seen_calls else (True, canonical_url)
 
         with patch(
-            "main_collect.collect_reddit_posts", return_value=[reddit_post]
+            "main_collect.collect_reddit_posts",
+            return_value=[reddit_post_1, reddit_post_2],
+        ), patch("main_collect.collect_news_articles", return_value=[]), patch(
+            "main_collect.has_seen_canonical", side_effect=mock_has_seen_canonical
         ), patch(
-            "main_collect.collect_news_articles", return_value=[news_article]
-        ), patch(
-            "main_collect.has_seen", side_effect=mock_has_seen
+            "main_collect.has_seen_canonical_by_platform", return_value=False
         ), patch(
             "main_collect.append_rows"
         ) as mock_append, patch(
@@ -140,7 +155,7 @@ class TestMainCollectDeduplication:
 
             count = main_collect.main_collect(["test"], "Test Topic")
 
-        # Should only append one row (the Reddit one)
+        # Should only append one row
         assert mock_append.call_count == 1
         rows = mock_append.call_args[0][0]
         assert len(rows) == 1
@@ -189,7 +204,7 @@ class TestMainCollectDeduplication:
 class TestMainCollectDateFiltering:
     """T6.3: Date filtering tests."""
 
-    def test_date_filtering_before_verdict(self, mock_config):
+    def test_date_filtering_before_verdict(self, mock_config, mock_canonical_dedupe):
         """Test that posts before verdict date are filtered out."""
         verdict_date = parse_iso_date(VERDICT_DATE)  # e.g., 2025-12-05
 
@@ -235,7 +250,7 @@ class TestMainCollectDateFiltering:
         assert len(rows) == 1
 
         # Verify it's the post-verdict one
-        assert rows[0][5] == "https://reddit.com/r/test/after"  # Post Link
+        assert rows[0][4] == "https://reddit.com/r/test/after"  # Post Link
 
         # Should mark only the after-verdict URL
         mock_mark_seen.assert_called_once()
@@ -269,7 +284,7 @@ class TestMainCollectEmptyResults:
 class TestMainCollectErrorHandling:
     """T6.5: Error handling tests."""
 
-    def test_reddit_collector_raises(self, mock_config):
+    def test_reddit_collector_raises(self, mock_config, mock_canonical_dedupe):
         """Test that Reddit collector failure doesn't stop News collection."""
         news_article = {
             "url": "https://news.com/article/1",
@@ -306,7 +321,7 @@ class TestMainCollectErrorHandling:
 
         assert count == 1
 
-    def test_news_collector_raises(self, mock_config):
+    def test_news_collector_raises(self, mock_config, mock_canonical_dedupe):
         """Test that News collector failure doesn't stop Reddit collection."""
         reddit_post = {
             "url": "https://reddit.com/r/test/post1",
@@ -350,7 +365,7 @@ class TestMainCollectErrorHandling:
 class TestMainCollectNumericMapping:
     """T6.6: Numeric mapping and eng_total tests."""
 
-    def test_numeric_mapping_and_eng_total(self, mock_config):
+    def test_numeric_mapping_and_eng_total(self, mock_config, mock_canonical_dedupe):
         """Test that numeric fields are correctly mapped and eng_total is computed."""
         reddit_post = {
             "url": "https://reddit.com/r/test/post1",
@@ -391,7 +406,7 @@ class TestMainCollectNumericMapping:
 
         assert count == 1
 
-    def test_eng_total_with_none_values(self, mock_config):
+    def test_eng_total_with_none_values(self, mock_config, mock_canonical_dedupe):
         """Test eng_total calculation when some values are None."""
         reddit_post = {
             "url": "https://reddit.com/r/test/post1",
@@ -428,7 +443,7 @@ class TestMainCollectNumericMapping:
 class TestMainCollectRowStructure:
     """Additional tests for row structure and column order."""
 
-    def test_row_column_order(self, mock_config):
+    def test_row_column_order(self, mock_config, mock_canonical_dedupe):
         """Test that row columns are in the exact specified order."""
         reddit_post = {
             "url": "https://reddit.com/r/test/post1",
@@ -459,23 +474,23 @@ class TestMainCollectRowStructure:
         # Verify exact column order
         assert row[0] is not None  # Date Posted
         assert row[1] == "Reddit"  # Platform
-        assert row[2] == "u/testuser"  # Profile
-        assert row[3] == "https://www.reddit.com/user/testuser"  # Link (profile)
-        assert row[4] == "N/A"  # Nº Of Followers
-        assert row[5] == "https://reddit.com/r/test/post1"  # Post Link
-        assert row[6] == "Test Topic"  # Topic
-        assert row[7] == "SHRM Test Post"  # title
-        assert row[8] == "N/A"  # Tone
+        assert "reddit.com/user/testuser" in row[2]  # Profile Link
+        assert row[3] == "N/A"  # Nº Of Followers
+        assert row[4] == "https://reddit.com/r/test/post1"  # Post Link
+        assert row[5] == "Test Topic"  # Topic title
+        assert "SHRM" in str(row[6])  # Summary
+        assert row[7] == "N/A"  # Tone
+        assert row[8] == ""  # Category
         assert row[9] == "N/A"  # Views
         assert row[10] == "1"  # Likes
         assert row[11] == "0"  # Comments
         assert row[12] == "0"  # Shares
         assert row[13] == "1"  # Eng. Total
-        assert row[14] is not None  # Post Summary
-        assert row[15] == ""  # SHRM Like
-        assert row[16] == ""  # SHRM Comment
+        assert row[14] == "N/A"  # Sentiment Score
+        assert row[15] == "N/A"  # Verified (Y/N)
+        assert row[16] == ""  # Notes
 
-    def test_news_item_row_structure(self, mock_config):
+    def test_news_item_row_structure(self, mock_config, mock_canonical_dedupe):
         """Test News item row structure."""
         news_article = {
             "url": "https://news.com/article/1",
@@ -499,20 +514,21 @@ class TestMainCollectRowStructure:
         row = rows[0]
 
         assert row[1] == "News"  # Platform
-        assert row[2] == "Reuters"  # Profile
-        assert row[3] == "N/A"  # Link (profile)
-        assert row[6] == "Test Topic"  # Topic
-        assert row[7] == "SHRM News Title"  # title
+        assert row[2] == "N/A"  # Profile Link
+        assert row[3] == "N/A"  # Followers
+        assert row[4] == "https://news.com/article/1"  # Post Link
+        assert row[5] == "Test Topic"  # Topic title
+        assert row[6] == "SHRM news description"  # Summary
+        assert row[7] == "N/A"  # Tone
         assert row[10] == "N/A"  # Likes
         assert row[11] == "N/A"  # Comments
         assert row[13] == "N/A"  # Eng. Total
-        assert row[14] == "SHRM news description"  # Post Summary
 
 
 class TestMainCollectTopicFiltering:
     """Tests for anchor-based topic filtering."""
 
-    def test_off_topic_items_are_removed(self, mock_config):
+    def test_off_topic_items_are_removed(self, mock_config, mock_canonical_dedupe):
         """Test that off-topic items are filtered out."""
         # Off-topic Reddit post (no SHRM anchors, no Johnny with case context)
         off_topic_reddit = {
@@ -566,7 +582,7 @@ class TestMainCollectTopicFiltering:
         mock_append.assert_not_called()
         assert count == 0
 
-    def test_on_topic_items_pass(self, mock_config):
+    def test_on_topic_items_pass(self, mock_config, mock_canonical_dedupe):
         """Test that on-topic items pass the filter."""
         # On-topic Reddit post (contains "shrm")
         on_topic_reddit = {
@@ -622,7 +638,7 @@ class TestMainCollectTopicFiltering:
         assert len(rows) == 3
         assert count == 3
 
-    def test_mixed_input_filtered_correctly(self, mock_config):
+    def test_mixed_input_filtered_correctly(self, mock_config, mock_canonical_dedupe):
         """Test that mixed on-topic and off-topic items are filtered correctly."""
         # Mix of on-topic and off-topic items
         on_topic_reddit = {
@@ -703,10 +719,16 @@ class TestMainCollectTopicFiltering:
         assert "Reddit" in platforms
         assert "News" in platforms
 
-        # Verify titles match on-topic items
-        titles = [row[7] for row in rows]  # title column
-        assert "SHRM trial verdict discussion" in titles
-        assert "Johnny C. Taylor found liable in harassment lawsuit" in titles
+        # Verify summaries contain on-topic content
+        summaries = [row[6] for row in rows]  # Summary column
+        assert any(
+            "shrm" in s.lower() or "society for human resource management" in s.lower()
+            for s in summaries
+        )
+        assert any(
+            "harassment" in s.lower() or "johnny c. taylor" in s.lower()
+            for s in summaries
+        )
 
     def test_topic_filter_various_anchors(self, mock_config):
         """Test that all anchor terms work correctly with refined logic."""

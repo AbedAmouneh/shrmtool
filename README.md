@@ -20,7 +20,6 @@ News Collector ──────┘
 4. **Deduplication** prevents duplicate URLs from being appended
 5. **Google Sheets** receives the final standardized rows
 
-
 ## Setup
 
 ### 1. Create a Virtual Environment
@@ -104,9 +103,11 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 The X (Twitter) collector uses the X API v2 Recent Search endpoint to fetch tweets.
 
 **Env vars:**
+
 - `X_BEARER_TOKEN`: X API bearer token
 
 **Flow:**
+
 1. For each search term, calls `https://api.twitter.com/2/tweets/search/recent`
 2. Requests `tweet.fields=created_at,public_metrics,text` and `expansions=author_id` with `user.fields=username,public_metrics`
 3. Normalizes each tweet to SHRM schema:
@@ -227,6 +228,92 @@ The Google Sheet uses a standardized 17-column schema. Here's how each column is
 | **SHRM Like**       | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 | **SHRM Comment**    | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 
+**Note:** The schema has been updated to the new 17-column format. The column order is:
+
+1. Date Posted, 2. Platform, 3. Profile Link, 4. N° of Followers, 5. Post Link, 6. Topic title, 7. Summary, 8. Tone, 9. Category, 10. Views, 11. Likes, 12. Comments, 13. Shares, 14. Eng. Total, 15. Sentiment Score, 16. Verified (Y/N), 17. Notes
+
+## Data Quality & Schema Guarantees
+
+The pipeline implements strict data quality controls to ensure all rows written to the Google Sheet are clean, correctly mapped, and properly deduplicated.
+
+### Schema Validation
+
+- **Strict 17-column enforcement**: All rows must have exactly 17 columns in the canonical order
+- **Required field validation**: Date Posted, Platform, Post Link, and Topic title must be non-empty
+- **Fail-fast behavior**: Invalid rows are logged and skipped (not appended to the sheet)
+- **Automatic defaults**: Missing non-metric values are filled with safe defaults ("N/A" or empty string)
+
+### Metric Normalization & Eng. Total
+
+- **K/M number parsing**: Follower counts and metrics in "64.5K" or "1.2M" format are parsed to integers
+- **Consistent Eng. Total calculation**: `Eng. Total = Likes + Comments + Shares` (computed when all three are numeric)
+- **Platform-specific defaults**:
+  - **News**: All metrics (Views, Likes, Comments, Shares, Eng. Total) are set to "N/A"
+  - **X/Reddit**: Metrics are normalized to integers; Eng. Total is computed from the sum
+- **No blank metrics**: Metrics are never blank; they are either numeric strings or "N/A"
+
+### Topic & Date Filtering
+
+- **Enhanced topic classification**: Items are classified as "on_topic", "borderline", or "off_topic"
+  - **on_topic**: Strong keyword presence (SHRM anchors OR Johnny C. Taylor + case context)
+  - **borderline**: Weak mentions (Johnny C. Taylor without case context, generic HR content)
+  - **off_topic**: No relevant keywords
+- **Current behavior**: Only "on_topic" items are appended to the sheet; borderline and off_topic are logged and filtered out
+- **Verdict date filtering**: All items must have dates >= VERDICT_DATE (in US/Eastern timezone)
+- **Logging**: Topic filter decisions are logged with counts for observability
+
+### Deduplication & Repost Tagging
+
+- **Canonical URL normalization**: URLs are normalized by:
+  - Converting http → https
+  - Stripping tracking parameters (utm\_\*, fbclid, gclid, etc.)
+  - Removing fragments (#...)
+  - Lowercasing hostname
+- **News deduplication**: If a News article's canonical URL has already been seen (any source), it is skipped entirely
+- **Social platform repost detection**:
+  - **Strict duplicate**: Same canonical URL + same profile → skipped
+  - **Repost**: Same canonical URL + different profile → kept and tagged
+    - `Category` field set to "Repost"
+    - `Notes` field contains: "Repost of canonical URL: {canonical_url}"
+- **URL validation**: Malformed or invalid URLs are rejected before processing
+
+### Per-Platform Mapping Rules
+
+Each platform has specific rules enforced during normalization:
+
+- **News**:
+  - Metrics (Views, Likes, Comments, Shares, Eng. Total): Always "N/A"
+  - Followers: Always "N/A"
+  - Profile Link: "N/A" (no profile URLs for news sources)
+- **X (Twitter)**:
+  - Metrics: Must be numeric (parsed from API responses)
+  - Followers: Numeric if available, "N/A" if not
+  - Profile Link: `https://x.com/{username}` format
+- **Reddit**:
+  - Metrics: Numeric (score → likes, numComments → comments)
+  - Followers: "N/A" (Reddit doesn't expose follower counts)
+  - Profile Link: `https://www.reddit.com/user/{username}` format
+
+### Troubleshooting Data Issues
+
+**Why are some items not appearing in the sheet?**
+
+- **Off-topic filtering**: Items without strong SHRM/JCT keywords are filtered out (check logs for "Topic filtering" messages)
+- **Date filtering**: Items before VERDICT_DATE are excluded
+- **Deduplication**: News articles with duplicate canonical URLs are skipped
+- **URL validation**: Items with malformed URLs are rejected
+- **Row validation**: Items that fail schema validation are logged and skipped
+
+**Why are some News articles missing?**
+
+- NewsAPI may return the same article from multiple sources; only the first one (by canonical URL) is kept
+- Articles with invalid or missing URLs are skipped
+
+**Why are some social posts tagged as "Repost"?**
+
+- Multiple profiles sharing the same article URL are detected as reposts
+- The first occurrence is kept as-is; subsequent occurrences are tagged with `Category="Repost"` and a note
+
 ## Testing
 
 This project uses `pytest` for the test suite. All tests are fully isolated and do not call external services.
@@ -260,6 +347,11 @@ Tests are organized in the `tests/` directory:
 - **`tests/test_google_sheets.py`** - Google Sheets integration
 - **`tests/test_collector.py`** - Reddit and NewsAPI collectors (combined)
 - **`tests/test_main_collect.py`** - Main orchestrator end-to-end tests
+- **`tests/test_metrics.py`** - Metric parsing and engagement helpers
+- **`tests/test_url_utils.py`** - URL canonicalization and validation
+- **`tests/test_schema.py`** - Schema build/validation helpers
+- **`tests/test_dedupe_behavior.py`** - Canonical dedupe and repost tagging
+- **`tests/test_topic_classification.py`** - Topic classification (on/borderline/off-topic)
 
 ### Mocking Strategy
 
@@ -280,6 +372,7 @@ All external services are mocked to ensure tests are fast, deterministic, and do
   - Each test gets a fresh temporary database
   - Tests verify `has_seen()` and `mark_seen()` behavior
 - **Service account**: `Path.exists()` is mocked to avoid file system checks
+- **Canonical dedupe**: Tests mock `has_seen_canonical*`/`mark_seen_canonical` to avoid touching real SQLite
 
 ### Optional: Coverage
 
@@ -392,4 +485,3 @@ shrmtool/
 ├── .env               # Environment variables (not committed)
 └── service_account.json # Google service account (not committed)
 ```
-

@@ -17,7 +17,13 @@ from collectors.x_collector import collect_twitter_posts
 
 # Import integrations
 from integrations.google_sheets import append_rows
-from integrations.dedupe_store import has_seen, mark_seen
+from integrations.dedupe_store import (
+    has_seen,
+    mark_seen,
+    has_seen_canonical,
+    has_seen_canonical_by_platform,
+    mark_seen_canonical,
+)
 
 # Import notifications
 from notifications.telegram_notifier import send_telegram_message
@@ -32,6 +38,10 @@ from utils.time_utils import (
 )
 from utils.sentiment import classify_sentiment_combined
 from utils.summary import build_summary
+from utils.metrics import parse_k_number, compute_eng_total, normalize_metric_value
+from utils.url_utils import canonical_url, is_valid_url
+from utils.platform_rules import apply_platform_defaults, validate_platform_item
+from utils.schema import build_row, validate_row
 
 # Configure logging
 logging.basicConfig(
@@ -52,9 +62,10 @@ def _normalize_reddit_item(
     Args:
         post: Raw Reddit post dictionary from collector
         topic: Topic label for the sheet
+        verdict_date_override: Optional verdict date override
 
     Returns:
-        Normalized item dictionary or None if date parsing fails
+        Normalized item dictionary or None if date parsing fails or URL is invalid
     """
     try:
         # Parse and format date
@@ -71,10 +82,26 @@ def _normalize_reddit_item(
         # Extract fields
         username = post.get("username", "").strip()
         url = post.get("url", "")
+
+        # Validate URL
+        if not is_valid_url(url):
+            logger.warning(f"Reddit post has invalid URL: {url}")
+            return None
+
         title = post.get("title", "") or "N/A"
         selftext = post.get("selftext", "") or ""
+
+        # Parse metrics using helper
         score = post.get("score", 0) or 0
         num_comments = post.get("numComments", 0) or 0
+
+        likes_val = parse_k_number(score) or 0
+        comments_val = parse_k_number(num_comments) or 0
+        shares_val = 0  # Reddit doesn't have separate shares
+
+        # Compute engagement total
+        eng_total_val = compute_eng_total(likes_val, comments_val, shares_val)
+        eng_total = str(eng_total_val) if eng_total_val is not None else "N/A"
 
         # Build profile
         if username:
@@ -84,22 +111,12 @@ def _normalize_reddit_item(
             profile = "N/A"
             profile_link = "N/A"
 
-        # Calculate engagement total
-        likes_val = int(score) if score is not None else 0
-        comments_val = int(num_comments) if num_comments is not None else 0
-        shares_val = 0  # Reddit doesn't have separate shares
-
-        if likes_val is not None and comments_val is not None:
-            eng_total = str(likes_val + comments_val + shares_val)
-        else:
-            eng_total = "N/A"
-
         # Build summary
         summary = selftext if selftext else title
         if len(summary) > 400:
             summary = summary[:400].rsplit(" ", 1)[0]  # Truncate at word boundary
 
-        return {
+        item = {
             "date_posted": date_posted,
             "platform": "Reddit",
             "profile": profile,
@@ -108,22 +125,33 @@ def _normalize_reddit_item(
             "post_link": url,
             "topic": topic,
             "title": title,
-            "tone": "N/A",  # No sentiment analysis yet per requirements
+            "summary": summary,
+            "tone": "N/A",
+            "category": "",
             "views": "N/A",
             "likes": str(likes_val),
             "comments": str(comments_val),
             "shares": str(shares_val),
             "eng_total": eng_total,
-            "summary": summary,
-            "shrm_like": "",
-            "shrm_comment": "",
+            "sentiment_score": "N/A",
+            "verified": "N/A",
+            "notes": "",
             # Preserve original text fields for topic filtering
             "selftext": selftext,
-            "description": "",  # Not applicable for Reddit
+            "description": "",
         }
 
+        # Apply platform defaults and validate
+        item = apply_platform_defaults(item)
+        is_valid, error_msg = validate_platform_item(item)
+        if not is_valid:
+            logger.warning(f"Reddit item failed platform validation: {error_msg}")
+            return None
+
+        return item
+
     except Exception as e:
-        logger.error(f"Error normalizing Reddit post: {e}")
+        logger.error(f"Error normalizing Reddit post: {e}", exc_info=True)
         return None
 
 
@@ -136,9 +164,10 @@ def _normalize_news_item(
     Args:
         article: Raw news article dictionary from collector
         topic: Topic label for the sheet
+        verdict_date_override: Optional verdict date override
 
     Returns:
-        Normalized item dictionary or None if date parsing fails
+        Normalized item dictionary or None if date parsing fails or URL is invalid
     """
     try:
         # Parse and format date
@@ -155,10 +184,16 @@ def _normalize_news_item(
         # Extract fields
         source_name = article.get("source_name", "") or "N/A"
         url = article.get("url", "")
+
+        # Validate URL
+        if not is_valid_url(url):
+            logger.warning(f"News article has invalid URL: {url}")
+            return None
+
         title = article.get("title", "") or "N/A"
         description = article.get("description", "") or "N/A"
 
-        return {
+        item = {
             "date_posted": date_posted,
             "platform": "News",
             "profile": source_name,
@@ -167,39 +202,50 @@ def _normalize_news_item(
             "post_link": url,
             "topic": topic,
             "title": title,
+            "summary": description,
             "tone": "N/A",
+            "category": "",
             "views": "N/A",
             "likes": "N/A",
             "comments": "N/A",
             "shares": "N/A",
             "eng_total": "N/A",
-            "summary": description,
-            "shrm_like": "",
-            "shrm_comment": "",
+            "sentiment_score": "N/A",
+            "verified": "N/A",
+            "notes": "",
             # Preserve original text fields for topic filtering
-            "selftext": "",  # Not applicable for News
+            "selftext": "",
             "description": description,
         }
 
+        # Apply platform defaults and validate
+        item = apply_platform_defaults(item)
+        is_valid, error_msg = validate_platform_item(item)
+        if not is_valid:
+            logger.warning(f"News item failed platform validation: {error_msg}")
+            return None
+
+        return item
+
     except Exception as e:
-        logger.error(f"Error normalizing news article: {e}")
+        logger.error(f"Error normalizing news article: {e}", exc_info=True)
         return None
 
 
-def is_on_topic(item: Dict[str, Any]) -> bool:
+def classify_topic(item: Dict[str, Any]) -> str:
     """
-    Check if an item is clearly related to SHRM/JCT using anchor-based filtering.
+    Classify an item's topicality: "on_topic", "borderline", or "off_topic".
 
     Rules:
-    1. Anything with SHRM/Society for Human Resource Management is on-topic.
-    2. Johnny C. Taylor content is only on-topic if it also has case/verdict context
-       (verdict, trial, lawsuit, allegations, harassment, scandal, controversy, etc.).
+    1. on_topic: Strong keyword presence (SHRM anchors OR Johnny C. Taylor + case context)
+    2. borderline: Weak or single mention (Johnny C. Taylor without case context, generic HR mentions)
+    3. off_topic: No relevant keywords
 
     Args:
         item: Normalized item dictionary with title, selftext (Reddit), or description (News)
 
     Returns:
-        True if item is on-topic, False otherwise
+        Classification string: "on_topic", "borderline", or "off_topic"
     """
     text_parts = [
         item.get("title") or "",
@@ -208,10 +254,18 @@ def is_on_topic(item: Dict[str, Any]) -> bool:
     ]
     blob = " ".join(text_parts).lower()
 
-    # Core SHRM anchors
+    # Core SHRM anchors (strong signals)
     shrm_anchors = [
         "shrm",
         "society for human resource management",
+        "shrm verdict",
+        "shrm trial",
+        "shrm lawsuit",
+        "shrm scandal",
+        "shrm controversy",
+        "shrm harassment",
+        "shrm sexual harassment",
+        "shrm discrimination",
     ]
 
     # Johnny C. Taylor name variants
@@ -219,9 +273,10 @@ def is_on_topic(item: Dict[str, Any]) -> bool:
         "johnny c. taylor",
         "johnny c taylor",
         "johnny taylor",
+        "shrm ceo johnny",
     ]
 
-    # Verdict / case context
+    # Verdict / case context (strong signals)
     case_anchors = [
         "verdict",
         "trial",
@@ -235,66 +290,130 @@ def is_on_topic(item: Dict[str, Any]) -> bool:
         "scandal",
         "controversy",
         "misconduct",
+        "discrimination",
     ]
 
-    has_shrm = any(anchor in blob for anchor in shrm_anchors)
-    has_johnny = any(anchor in blob for anchor in johnny_anchors)
-    has_case_context = any(anchor in blob for anchor in case_anchors)
+    # Noise/negative list (generic HR content where SHRM is only peripheral)
+    noise_terms = [
+        "hr best practices",
+        "hr conference",
+        "hr certification",
+        "hr training",
+    ]
 
-    # Rules:
-    # 1) Anything with SHRM is on-topic.
-    if has_shrm:
-        return True
+    # Count matches
+    shrm_matches = sum(1 for anchor in shrm_anchors if anchor in blob)
+    johnny_matches = sum(1 for anchor in johnny_anchors if anchor in blob)
+    case_matches = sum(1 for anchor in case_anchors if anchor in blob)
+    noise_matches = sum(1 for term in noise_terms if term in blob)
 
-    # 2) Johnny C. Taylor content is only on-topic if it clearly has case/verdict context.
-    if has_johnny and has_case_context:
-        return True
+    # Rule 1: Strong SHRM presence = on_topic
+    if shrm_matches > 0:
+        # If noise terms dominate, might be borderline, but for now keep as on_topic
+        return "on_topic"
 
-    return False
+    # Rule 2: Johnny C. Taylor + case context = on_topic
+    if johnny_matches > 0 and case_matches > 0:
+        return "on_topic"
+
+    # Rule 3: Johnny C. Taylor without case context = borderline
+    if johnny_matches > 0:
+        return "borderline"
+
+    # Rule 4: Case context alone (without SHRM/Johnny) = borderline
+    if case_matches > 0:
+        return "borderline"
+
+    # Rule 5: Everything else = off_topic
+    return "off_topic"
+
+
+def _process_item_with_dedupe(
+    item: Dict[str, Any],
+    platform: str,
+    stats: Dict[str, int],
+    all_items: List[Dict[str, Any]],
+    new_urls: List[str],
+    new_canonical_items: List[tuple],
+) -> bool:
+    """
+    Process an item with canonical URL deduplication and repost detection.
+
+    Args:
+        item: Normalized item dictionary
+        platform: Platform name ("News", "X", "Reddit")
+        stats: Statistics dictionary to update
+        all_items: List to append items to
+        new_urls: List to append URLs to (for legacy dedupe)
+        new_canonical_items: List to append (canonical_url, platform, profile, post_url) tuples
+
+    Returns:
+        True if item was added, False if it was filtered out
+    """
+    post_url = item.get("post_link", "")
+    if not post_url:
+        return False
+
+    # Get canonical URL
+    canonical = canonical_url(post_url)
+    if not canonical:
+        logger.warning(f"Item has invalid URL, skipping: {post_url}")
+        stats["filtered_dedupe"] = stats.get("filtered_dedupe", 0) + 1
+        return False
+
+    profile = item.get("profile", "")
+
+    # For News: skip if canonical URL already seen (any profile)
+    if platform == "News":
+        if has_seen_canonical_by_platform(canonical, platform):
+            stats["filtered_dedupe"] = stats.get("filtered_dedupe", 0) + 1
+            return False
+    else:
+        # For social platforms: check for exact duplicate (same canonical + same profile)
+        has_seen_flag, existing_url = has_seen_canonical(canonical, platform, profile)
+        if has_seen_flag:
+            stats["filtered_dedupe"] = stats.get("filtered_dedupe", 0) + 1
+            return False
+
+        # Check for repost (same canonical, different profile)
+        if has_seen_canonical_by_platform(canonical, platform):
+            # This is a repost - tag it
+            item["category"] = "Repost"
+            item["notes"] = f"Repost of canonical URL: {canonical}"
+            logger.info(
+                f"Detected repost: {post_url} (canonical: {canonical}, profile: {profile})"
+            )
+
+    # Item passed dedupe - add it
+    all_items.append(item)
+    new_urls.append(post_url)  # Legacy dedupe
+    new_canonical_items.append((canonical, platform, profile, post_url))
+    return True
+
+
+def is_on_topic(item: Dict[str, Any]) -> bool:
+    """
+    Check if an item is clearly related to SHRM/JCT using anchor-based filtering.
+
+    This is a convenience wrapper around classify_topic that returns True only for "on_topic".
+
+    Args:
+        item: Normalized item dictionary with title, selftext (Reddit), or description (News)
+
+    Returns:
+        True if item is on_topic, False otherwise
+    """
+    return classify_topic(item) == "on_topic"
 
 
 def _item_to_row(item: Dict[str, Any]) -> List[Any]:
     """
-    Convert a normalized item dictionary to a row matching the sheet column order.
+    Convert a normalized item dictionary to a row using the schema builder.
 
-    Column order:
-    1. Date Posted
-    2. Platform
-    3. Profile
-    4. Link (profile link)
-    5. Nº Of Followers
-    6. Post Link
-    7. Topic
-    8. title
-    9. Tone
-    10. Views
-    11. Likes
-    12. Comments
-    13. Shares
-    14. Eng. Total
-    15. Post Summary
-    16. SHRM Like
-    17. SHRM Comment
+    This function uses build_row from utils.schema to ensure consistent
+    17-column format matching the canonical schema.
     """
-    return [
-        item["date_posted"],  # 1 Date Posted
-        item["platform"],  # 2 Platform
-        item["profile"],  # 3 Profile
-        item["profile_link"],  # 4 Link (profile)
-        item["followers"],  # 5 Nº Of Followers
-        item["post_link"],  # 6 Post Link
-        item["topic"],  # 7 Topic
-        item["title"],  # 8 title
-        item["tone"],  # 9 Tone
-        item["views"],  # 10 Views
-        item["likes"],  # 11 Likes
-        item["comments"],  # 12 Comments
-        item["shares"],  # 13 Shares
-        item["eng_total"],  # 14 Eng. Total
-        item["summary"],  # 15 Post Summary
-        item["shrm_like"],  # 16 SHRM Like
-        item["shrm_comment"],  # 17 SHRM Comment
-    ]
+    return build_row(item)
 
 
 def main_collect(
@@ -330,7 +449,10 @@ def main_collect(
     logger.info("=" * 60)
 
     all_items = []
-    new_urls = []
+    new_urls = []  # Legacy dedupe URLs
+    new_canonical_items = (
+        []
+    )  # List of (canonical_url, platform, profile, post_url) tuples
 
     # Statistics tracking
     reddit_stats = {
@@ -368,19 +490,22 @@ def main_collect(
             if not url:
                 continue
 
-            # Check if already seen
-            if has_seen(url):
-                reddit_stats["filtered_dedupe"] += 1
+            # Normalize (includes date filtering and URL validation)
+            normalized = _normalize_reddit_item(post, topic, verdict_date_override)
+            if not normalized:
+                reddit_stats["filtered_date"] += 1
                 continue
 
-            # Normalize (includes date filtering)
-            normalized = _normalize_reddit_item(post, topic, verdict_date_override)
-            if normalized:
-                all_items.append(normalized)
-                new_urls.append(url)
+            # Process with canonical URL dedupe
+            if _process_item_with_dedupe(
+                normalized,
+                "Reddit",
+                reddit_stats,
+                all_items,
+                new_urls,
+                new_canonical_items,
+            ):
                 reddit_stats["normalized"] += 1
-            else:
-                reddit_stats["filtered_date"] += 1
 
         logger.info(
             f"Reddit: {reddit_stats['normalized']} normalized, "
@@ -408,19 +533,17 @@ def main_collect(
             if not url:
                 continue
 
-            # Check if already seen
-            if has_seen(url):
-                news_stats["filtered_dedupe"] += 1
+            # Normalize (includes date filtering and URL validation)
+            normalized = _normalize_news_item(article, topic, verdict_date_override)
+            if not normalized:
+                news_stats["filtered_date"] += 1
                 continue
 
-            # Normalize (includes date filtering)
-            normalized = _normalize_news_item(article, topic, verdict_date_override)
-            if normalized:
-                all_items.append(normalized)
-                new_urls.append(url)
+            # Process with canonical URL dedupe (News: skip duplicates entirely)
+            if _process_item_with_dedupe(
+                normalized, "News", news_stats, all_items, new_urls, new_canonical_items
+            ):
                 news_stats["normalized"] += 1
-            else:
-                news_stats["filtered_date"] += 1
 
         logger.info(
             f"News: {news_stats['normalized']} normalized, "
@@ -452,14 +575,11 @@ def main_collect(
             if not url:
                 continue
 
-            # Global dedupe
-            if has_seen(url):
-                twitter_stats["filtered_dedupe"] += 1
-                continue
-
-            all_items.append(tweet)
-            new_urls.append(url)
-            twitter_stats["normalized"] += 1
+            # Process with canonical URL dedupe (X: detect reposts)
+            if _process_item_with_dedupe(
+                tweet, "X", twitter_stats, all_items, new_urls, new_canonical_items
+            ):
+                twitter_stats["normalized"] += 1
 
         logger.info(
             f"Twitter: {twitter_stats['normalized']} normalized, "
@@ -476,16 +596,26 @@ def main_collect(
 
     # Apply on-topic anchor filtering (final safety layer)
     items_before_topic_filter = len(all_items)
-    all_items = [item for item in all_items if is_on_topic(item)]
+    topic_classifications = {"on_topic": 0, "borderline": 0, "off_topic": 0}
+    filtered_items = []
+
+    for item in all_items:
+        classification = classify_topic(item)
+        topic_classifications[classification] = (
+            topic_classifications.get(classification, 0) + 1
+        )
+        if classification == "on_topic":
+            filtered_items.append(item)
+
+    all_items = filtered_items
     items_filtered_topic = items_before_topic_filter - len(all_items)
 
-    if items_filtered_topic > 0:
-        logger.info(
-            f"Topic filtering: Removed {items_filtered_topic} off-topic items, "
-            f"{len(all_items)} remain"
-        )
-    else:
-        logger.info(f"Topic filtering: All {len(all_items)} items passed topic filter")
+    logger.info(
+        f"Topic filtering: {topic_classifications['on_topic']} on-topic, "
+        f"{topic_classifications['borderline']} borderline, "
+        f"{topic_classifications['off_topic']} off-topic. "
+        f"Keeping {len(all_items)} on-topic items."
+    )
 
     # Apply max_results limit if specified
     original_count = len(all_items)
@@ -494,8 +624,23 @@ def main_collect(
         all_items = all_items[:max_results]
         new_urls = new_urls[:max_results]
 
-    # Convert items to rows
-    rows = [_item_to_row(item) for item in all_items]
+    # Convert items to rows with validation
+    rows = []
+    validation_failures = 0
+    for item in all_items:
+        row = _item_to_row(item)
+        if validate_row(row):
+            rows.append(row)
+        else:
+            validation_failures += 1
+            logger.error(
+                f"Row validation failed for item: {item.get('post_link', 'unknown')}. Skipping."
+            )
+
+    if validation_failures > 0:
+        logger.warning(
+            f"Row validation: {validation_failures} rows failed validation and were skipped"
+        )
 
     # Calculate summary statistics
     total_raw = (
@@ -554,8 +699,17 @@ def main_collect(
                 logger.info(f"Appending {len(rows)} rows to Google Sheet...")
                 append_rows(rows)
 
-                # Mark URLs as seen
+                # Mark URLs as seen (legacy dedupe)
                 mark_seen(new_urls)
+
+                # Mark canonical URLs as seen (enhanced dedupe)
+                from datetime import datetime
+
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                for canonical, platform, profile, post_url in new_canonical_items:
+                    mark_seen_canonical(
+                        canonical, platform, post_url, profile, current_date
+                    )
 
                 logger.info(f"Successfully appended {len(rows)} rows")
                 logger.info("=" * 60)

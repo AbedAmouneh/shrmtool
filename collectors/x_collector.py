@@ -13,7 +13,14 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from utils.time_utils import parse_newsapi_date, format_date_mmddyyyy, is_after_verdict_date
+from utils.time_utils import (
+    parse_newsapi_date,
+    format_date_mmddyyyy,
+    is_after_verdict_date,
+)
+from utils.metrics import parse_k_number, compute_eng_total
+from utils.url_utils import is_valid_url
+from utils.platform_rules import apply_platform_defaults, validate_platform_item
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +61,12 @@ def _normalize_tweet(
         handle = f"@{username}" if username else "N/A"
         profile_link = f"https://x.com/{username}" if username else "N/A"
 
-        followers = user.get("public_metrics", {}).get("followers_count")
-        followers_str = str(followers) if followers is not None else "N/A"
+        # Parse followers using metrics helper
+        followers_raw = user.get("public_metrics", {}).get("followers_count")
+        followers_val = (
+            parse_k_number(followers_raw) if followers_raw is not None else None
+        )
+        followers_str = str(followers_val) if followers_val is not None else "N/A"
 
         text = tweet.get("text", "") or ""
         title = text[:160] if len(text) > 160 else text
@@ -63,18 +74,33 @@ def _normalize_tweet(
             title = "N/A"
 
         public_metrics = tweet.get("public_metrics", {}) or {}
-        like_count = public_metrics.get("like_count", 0) or 0
-        reply_count = public_metrics.get("reply_count", 0) or 0
-        retweet_count = public_metrics.get("retweet_count", 0) or 0
-        quote_count = public_metrics.get("quote_count", 0) or 0
-        impressions = public_metrics.get("impression_count")
+        like_count_raw = public_metrics.get("like_count", 0) or 0
+        reply_count_raw = public_metrics.get("reply_count", 0) or 0
+        retweet_count_raw = public_metrics.get("retweet_count", 0) or 0
+        quote_count_raw = public_metrics.get("quote_count", 0) or 0
+        impressions_raw = public_metrics.get("impression_count")
+
+        # Parse metrics using helper
+        like_count = parse_k_number(like_count_raw) or 0
+        reply_count = parse_k_number(reply_count_raw) or 0
+        retweet_count = parse_k_number(retweet_count_raw) or 0
+        quote_count = parse_k_number(quote_count_raw) or 0
+        impressions = (
+            parse_k_number(impressions_raw) if impressions_raw is not None else None
+        )
 
         shares = retweet_count + quote_count
-        eng_total = like_count + reply_count + shares
+        eng_total_val = compute_eng_total(like_count, reply_count, shares)
+        eng_total = str(eng_total_val) if eng_total_val is not None else "N/A"
 
         url = f"https://twitter.com/i/web/status/{tweet_id}"
 
-        return {
+        # Validate URL
+        if not is_valid_url(url):
+            logger.warning(f"X post has invalid URL: {url}")
+            return None
+
+        item = {
             "date_posted": date_posted,
             "platform": "X",
             "profile": handle,
@@ -83,19 +109,30 @@ def _normalize_tweet(
             "post_link": url,
             "topic": topic,
             "title": title,
+            "summary": title,
             "tone": "N/A",
+            "category": "",
             "views": str(impressions) if impressions is not None else "N/A",
             "likes": str(like_count),
             "comments": str(reply_count),
             "shares": str(shares),
-            "eng_total": str(eng_total),
-            "summary": title,
-            "shrm_like": "N/A",
-            "shrm_comment": "N/A",
-            # Preserve fields for topic filtering (if needed later)
+            "eng_total": eng_total,
+            "sentiment_score": "N/A",
+            "verified": "N/A",
+            "notes": "",
+            # Preserve fields for topic filtering
             "description": text,
             "selftext": "",
         }
+
+        # Apply platform defaults and validate
+        item = apply_platform_defaults(item)
+        is_valid, error_msg = validate_platform_item(item)
+        if not is_valid:
+            logger.warning(f"X item failed platform validation: {error_msg}")
+            return None
+
+        return item
     except Exception as e:
         logger.error(f"Error normalizing tweet: {e}", exc_info=True)
         return None
@@ -122,7 +159,9 @@ def collect_twitter_posts(
     seen_urls = set()
 
     for idx, query in enumerate(search_terms, start=1):
-        logger.info(f"Twitter Collector: Processing query {idx}/{len(search_terms)}: '{query}'")
+        logger.info(
+            f"Twitter Collector: Processing query {idx}/{len(search_terms)}: '{query}'"
+        )
         raw_count = 0
         normalized_count = 0
         filtered_date = 0
@@ -175,9 +214,13 @@ def collect_twitter_posts(
             )
 
         except Exception as e:
-            logger.error(f"Twitter Collector: Error collecting tweets for '{query}': {e}", exc_info=True)
+            logger.error(
+                f"Twitter Collector: Error collecting tweets for '{query}': {e}",
+                exc_info=True,
+            )
             continue
 
-    logger.info(f"Twitter Collector: Completed - {len(results)} unique tweets collected across {len(search_terms)} queries")
+    logger.info(
+        f"Twitter Collector: Completed - {len(results)} unique tweets collected across {len(search_terms)} queries"
+    )
     return results
-
