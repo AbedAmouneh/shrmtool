@@ -16,12 +16,16 @@ logger = logging.getLogger(__name__)
 # NewsAPI base URL
 NEWSAPI_BASE_URL = "https://newsapi.org/v2"
 
-# Search terms for news
+# Search terms for news, tuned around the SHRM verdict (discrimination, racial discrimination, 11.5M amount)
 NEWS_SEARCH_TERMS = [
     "SHRM discrimination",
     "SHRM trial",
     "SHRM verdict",
+    "SHRM 11.5 million",  # NEW
+    "SHRM racial discrimination",  # NEW
+    "SHRM discrimination lawsuit",  # NEW
     "Society for Human Resource Management verdict",
+    "\"Society for Human Resource Management\" discrimination",  # NEW
 ]
 
 

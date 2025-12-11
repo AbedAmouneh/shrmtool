@@ -116,6 +116,7 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 - Sets engagement fields to "N/A" (News articles don't have likes/comments/shares)
 - Profile column shows the news source name (or falls back to URL domain if source is missing)
 - Post Summary includes source attribution: `"Description text (Source: Business Insider – by Jack Newsham)"` or `"Description text (Source: Business Insider)"` if author is missing
+- Search terms are tuned around the SHRM verdict: discrimination, racial discrimination, the 11.5M verdict amount, and Society for Human Resource Management phrasing (see `NEWS_SEARCH_TERMS` in code)
 
 ### X Collector
 
