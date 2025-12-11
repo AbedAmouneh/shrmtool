@@ -45,11 +45,13 @@ Create a `.env` file in the project root with the following variables:
 NEWS_API_KEY=your_newsapi_key_here
 SHEET_ID=your_google_sheet_id_here
 VERDICT_DATE=2025-12-05
+NEWS_DOMAINS=businessinsider.com,biztoc.com  # Optional: restrict to specific domains
 ```
 
 - `NEWS_API_KEY`: Your NewsAPI.org API key
 - `SHEET_ID`: The Google Sheet ID (found in the sheet's URL)
 - `VERDICT_DATE`: ISO date string (YYYY-MM-DD) for the minimum date filter
+- `NEWS_DOMAINS`: (Optional) Comma-separated list of domains to restrict NewsAPI searches. If not set, searches all indexed news sources.
 
 ### 4. Service Account Setup
 
@@ -91,6 +93,20 @@ The News collector uses NewsAPI.org's `/everything` endpoint to fetch articles.
 3. Normalizes each article to extract: source name, title, description, URL, publishedAt
 4. Filters out articles missing URLs or dates
 5. Deduplicates within the collection run
+6. Logs which domains returned articles for observability
+
+**Domain Coverage:**
+
+- **By default**: NewsAPI is queried **without a domains filter**, allowing articles from all indexed news sources (Business Insider, HR Brew, HRO Today, AfroTech, Reuters, etc.)
+- **Optional restriction**: Set `NEWS_DOMAINS` environment variable (comma-separated) to restrict to specific domains:
+  ```env
+  NEWS_DOMAINS=businessinsider.com,biztoc.com,reuters.com
+  ```
+- **Data quality**: Even with broad coverage, the pipeline keeps the sheet clean using:
+  - Topic classification (only on-topic items are appended)
+  - Verdict date filtering (only post-verdict content)
+  - Canonical URL deduplication (prevents duplicate articles)
+  - Schema validation (17-column enforcement)
 
 **Normalization:**
 

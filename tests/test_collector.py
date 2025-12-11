@@ -542,4 +542,160 @@ class TestCollectNewsArticles:
         # Verify it can be parsed
         parsed_date = parse_newsapi_date(published_at)
         assert isinstance(parsed_date, datetime)
+    
+    def test_get_news_domains_from_env_not_set(self, mock_config, monkeypatch):
+        """Test get_news_domains_from_env returns None when NEWS_DOMAINS is not set."""
+        monkeypatch.delenv("NEWS_DOMAINS", raising=False)
+        domains = news_collector.get_news_domains_from_env()
+        assert domains is None
+    
+    def test_get_news_domains_from_env_normalized(self, mock_config, monkeypatch):
+        """Test get_news_domains_from_env normalizes whitespace and removes empty entries."""
+        # Test with extra whitespace and empty entries
+        monkeypatch.setenv("NEWS_DOMAINS", " a.com , b.com ,, c.com ")
+        domains = news_collector.get_news_domains_from_env()
+        assert domains == "a.com,b.com,c.com"
+        
+        # Test with single domain
+        monkeypatch.setenv("NEWS_DOMAINS", "businessinsider.com")
+        domains = news_collector.get_news_domains_from_env()
+        assert domains == "businessinsider.com"
+    
+    def test_no_domains_param_by_default(self, mock_config, monkeypatch):
+        """Test that domains param is not sent when NEWS_DOMAINS is not set."""
+        monkeypatch.delenv("NEWS_DOMAINS", raising=False)
+        
+        fake_article = {
+            "source": {"name": "Test Source"},
+            "title": "Test Title",
+            "url": "https://example.com/test",
+            "publishedAt": "2025-12-06T10:00:00Z",
+        }
+        
+        fake_response = FakeResponse(200, {
+            "status": "ok",
+            "articles": [fake_article],
+            "totalResults": 1,
+        })
+        
+        captured_params = []
+        
+        def mock_get(url, params=None, timeout=None):
+            captured_params.append(params)
+            return fake_response
+        
+        with patch('requests.get', side_effect=mock_get):
+            news_collector.collect_news_articles()
+        
+        # Verify domains key is not in params
+        assert len(captured_params) > 0
+        for params in captured_params:
+            assert "domains" not in params
+    
+    def test_domains_param_when_configured(self, mock_config, monkeypatch):
+        """Test that domains param is sent when NEWS_DOMAINS is set."""
+        monkeypatch.setenv("NEWS_DOMAINS", "businessinsider.com,biztoc.com")
+        
+        fake_article = {
+            "source": {"name": "Business Insider"},
+            "title": "Test Title",
+            "url": "https://businessinsider.com/test",
+            "publishedAt": "2025-12-06T10:00:00Z",
+        }
+        
+        fake_response = FakeResponse(200, {
+            "status": "ok",
+            "articles": [fake_article],
+            "totalResults": 1,
+        })
+        
+        captured_params = []
+        
+        def mock_get(url, params=None, timeout=None):
+            captured_params.append(params)
+            return fake_response
+        
+        with patch('requests.get', side_effect=mock_get):
+            news_collector.collect_news_articles()
+        
+        # Verify domains key is in params with correct value
+        assert len(captured_params) > 0
+        found_domains = False
+        for params in captured_params:
+            if "domains" in params:
+                assert params["domains"] == "businessinsider.com,biztoc.com"
+                found_domains = True
+        assert found_domains, "domains param should be present in at least one request"
+    
+    def test_multiple_domains_from_different_sources(self, mock_config, monkeypatch):
+        """Test that articles from multiple domains are accepted and normalized correctly."""
+        monkeypatch.delenv("NEWS_DOMAINS", raising=False)  # No domain filter
+        
+        fake_articles = [
+            {
+                "source": {"name": "Business Insider"},
+                "title": "SHRM Verdict: Business Insider Coverage",
+                "description": "Business Insider reports on the SHRM verdict...",
+                "url": "https://www.businessinsider.com/shrm-verdict",
+                "publishedAt": "2025-12-09T10:00:00Z",
+                "author": "John Smith",
+            },
+            {
+                "source": {"name": "HR Brew"},
+                "title": "SHRM loses $11.5 million discrimination lawsuit",
+                "description": "HR Brew covers the SHRM trial outcome...",
+                "url": "https://www.hr-brew.com/stories/2025/12/09/shrm-loses-usd11-5-million-discrimination-lawsuit",
+                "publishedAt": "2025-12-09T11:00:00Z",
+                "author": "Jane Doe",
+            },
+            {
+                "source": {"name": "HRO Today"},
+                "title": "SHRM Hit With $11.5 Million Verdict",
+                "description": "HRO Today reports on the racial discrimination case...",
+                "url": "https://www.hrotoday.com/news/ticker/shrm-hit-with-11-5-million-verdict-in-racial-discrimination-lawsuit/",
+                "publishedAt": "2025-12-09T12:00:00Z",
+                "author": "Bob Johnson",
+            },
+            {
+                "source": {"name": "AfroTech"},
+                "title": "HR Leader SHRM Verdict: Racial Discrimination Lawsuit",
+                "description": "AfroTech covers the SHRM verdict...",
+                "url": "https://afrotech.com/hr-leader-shrm-verdict-racial-discrimination-retaliation-lawsuit",
+                "publishedAt": "2025-12-09T13:00:00Z",
+                "author": "Alice Williams",
+            },
+        ]
+        
+        fake_response = FakeResponse(200, {
+            "status": "ok",
+            "articles": fake_articles,
+            "totalResults": 4,
+        })
+        
+        with patch('requests.get', return_value=fake_response):
+            articles = news_collector.collect_news_articles()
+        
+        # All articles should be collected and normalized
+        assert len(articles) == 4
+        
+        # Verify each article is correctly normalized
+        urls = [a["url"] for a in articles]
+        assert "https://www.businessinsider.com/shrm-verdict" in urls
+        assert "https://www.hr-brew.com/stories/2025/12/09/shrm-loses-usd11-5-million-discrimination-lawsuit" in urls
+        assert "https://www.hrotoday.com/news/ticker/shrm-hit-with-11-5-million-verdict-in-racial-discrimination-lawsuit/" in urls
+        assert "https://afrotech.com/hr-leader-shrm-verdict-racial-discrimination-retaliation-lawsuit" in urls
+        
+        # Verify source names are extracted correctly
+        source_names = [a["source_name"] for a in articles]
+        assert "Business Insider" in source_names
+        assert "HR Brew" in source_names
+        assert "HRO Today" in source_names
+        assert "AfroTech" in source_names
+        
+        # Verify authors are extracted
+        authors = [a.get("author", "") for a in articles]
+        assert "John Smith" in authors
+        assert "Jane Doe" in authors
+        assert "Bob Johnson" in authors
+        assert "Alice Williams" in authors
 

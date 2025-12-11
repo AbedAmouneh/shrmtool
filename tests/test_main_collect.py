@@ -527,7 +527,6 @@ class TestMainCollectRowStructure:
         assert row[11] == "N/A"  # Comments
         assert row[13] == "N/A"  # Eng. Total
 
-
     def test_news_profile_fallback_to_domain_when_source_missing(
         self, mock_config, mock_canonical_dedupe
     ):

@@ -7,6 +7,8 @@ This module fetches SHRM-related news articles from NewsAPI's /everything endpoi
 import requests
 from typing import List, Dict, Any, Optional
 import logging
+import os
+from urllib.parse import urlparse
 from utils.config import NEWS_API_KEY, VERDICT_DATE
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,23 @@ NEWS_SEARCH_TERMS = [
     "SHRM verdict",
     "Society for Human Resource Management verdict",
 ]
+
+
+def get_news_domains_from_env() -> Optional[str]:
+    """
+    Get comma-separated news domains from NEWS_DOMAINS environment variable.
+
+    Returns:
+        Comma-separated string of domains if NEWS_DOMAINS is set, None otherwise.
+        Domains are normalized (whitespace stripped, empty entries removed).
+    """
+    raw = os.getenv("NEWS_DOMAINS")
+    if not raw:
+        return None
+
+    # Normalize: strip whitespace, remove empty entries
+    domains = [d.strip() for d in raw.split(",") if d.strip()]
+    return ",".join(domains) if domains else None
 
 
 def fetch_newsapi_page(
@@ -52,6 +71,14 @@ def fetch_newsapi_page(
         "pageSize": min(page_size, 100),  # NewsAPI max is 100
         "apiKey": NEWS_API_KEY,
     }
+
+    # Optionally add domains filter if NEWS_DOMAINS env var is set
+    domains = get_news_domains_from_env()
+    if domains:
+        params["domains"] = domains
+        logger.debug(f"NewsAPI query '{query}' using domains filter: {domains}")
+    else:
+        logger.debug(f"NewsAPI query '{query}' searching all domains (no filter)")
 
     try:
         logger.info(f"Fetching NewsAPI page {page} for query: {query}")
@@ -191,9 +218,28 @@ def collect_news_articles() -> List[Dict[str, Any]]:
             articles = fetch_all_newsapi_results(query, max_results=100)
             raw_count = len(articles)
             total_raw += raw_count
-            logger.info(
-                f"News Collector: Query '{query}' returned {raw_count} raw articles"
-            )
+
+            # Compute and log domains for observability
+            domains_set = set()
+            for article_data in articles:
+                url = article_data.get("url", "")
+                if url:
+                    try:
+                        parsed = urlparse(url)
+                        if parsed.netloc:
+                            domains_set.add(parsed.netloc)
+                    except Exception:
+                        pass  # Skip malformed URLs
+
+            if domains_set:
+                domains_str = ", ".join(sorted(domains_set))
+                logger.info(
+                    f"News Collector: Query '{query}' returned {raw_count} raw articles from domains: {domains_str}"
+                )
+            else:
+                logger.info(
+                    f"News Collector: Query '{query}' returned {raw_count} raw articles"
+                )
 
             normalized_count = 0
             skipped_count = 0
