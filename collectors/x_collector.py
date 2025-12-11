@@ -27,6 +27,20 @@ logger = logging.getLogger(__name__)
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN")
 SEARCH_URL = "https://api.twitter.com/2/tweets/search/recent"
 
+# Search terms tuned around SHRM verdict / discrimination themes
+X_SEARCH_TERMS = [
+    "SHRM discrimination",
+    "SHRM trial",
+    "SHRM verdict",
+    "SHRM 11.5 million",
+    "SHRM racial discrimination",
+    "SHRM discrimination lawsuit",
+    "Society for Human Resource Management verdict",
+    '"Society for Human Resource Management" discrimination',
+    "Johnny C. Taylor SHRM",
+    "Johnny Taylor SHRM verdict",
+]
+
 
 def _build_headers() -> Dict[str, str]:
     if not X_BEARER_TOKEN:
@@ -155,8 +169,17 @@ def collect_twitter_posts(
         logger.info("Twitter Collector: Skipped because X_BEARER_TOKEN is not set")
         return results
 
+    if not search_terms:
+        search_terms = X_SEARCH_TERMS
+
     headers = _build_headers()
     seen_urls = set()
+
+    logger.info(
+        "Twitter Collector: Starting, search_terms=%s, verdict_date=%s",
+        search_terms,
+        verdict_date_override or "default",
+    )
 
     for idx, query in enumerate(search_terms, start=1):
         logger.info(
@@ -167,8 +190,10 @@ def collect_twitter_posts(
         filtered_date = 0
         skipped_missing = 0
 
+        # Send query with language filter; no aggressive operators to avoid over-filtering
+        query_str = f"({query}) lang:en"
         params = {
-            "query": query,
+            "query": query_str,
             "max_results": min(max_results, 100),
             "tweet.fields": "created_at,public_metrics,text,author_id",
             "expansions": "author_id",
@@ -176,6 +201,10 @@ def collect_twitter_posts(
         }
 
         try:
+            logger.info(
+                "Twitter Collector: Query params (no token): %s",
+                {k: v for k, v in params.items() if k != "Authorization"},
+            )
             resp = requests.get(SEARCH_URL, headers=headers, params=params, timeout=30)
             if resp.status_code != 200:
                 logger.warning(
@@ -187,8 +216,25 @@ def collect_twitter_posts(
             tweets = data.get("data", []) or []
             users = data.get("includes", {}).get("users", []) or []
             user_lookup = {u.get("id"): u for u in users}
+            meta = data.get("meta", {}) or {}
 
             raw_count = len(tweets)
+
+            # Log meta/result stats
+            meta_result_count = meta.get("result_count", raw_count)
+            next_token = meta.get("next_token")
+            created_times = [t.get("created_at") for t in tweets if t.get("created_at")]
+            created_min = min(created_times) if created_times else None
+            created_max = max(created_times) if created_times else None
+            logger.info(
+                "Twitter Collector: Query '%s' status=%s result_count=%s next_token=%s created_at_range=%s..%s",
+                query,
+                resp.status_code,
+                meta_result_count,
+                bool(next_token),
+                created_min,
+                created_max,
+            )
 
             for tweet in tweets:
                 normalized = _normalize_tweet(

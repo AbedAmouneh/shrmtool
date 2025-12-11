@@ -25,7 +25,7 @@ NEWS_SEARCH_TERMS = [
     "SHRM racial discrimination",  # NEW
     "SHRM discrimination lawsuit",  # NEW
     "Society for Human Resource Management verdict",
-    "\"Society for Human Resource Management\" discrimination",  # NEW
+    '"Society for Human Resource Management" discrimination',  # NEW
 ]
 
 

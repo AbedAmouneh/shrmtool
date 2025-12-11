@@ -321,6 +321,8 @@ def classify_topic(item: Dict[str, Any]) -> str:
         "controversy",
         "misconduct",
         "discrimination",
+        "11.5 million",
+        "11.5m",
     ]
 
     # Noise/negative list (generic HR content where SHRM is only peripheral)
@@ -616,6 +618,11 @@ def main_collect(
             f"{twitter_stats['filtered_date']} filtered by date, "
             f"{twitter_stats['filtered_dedupe']} filtered by dedupe"
         )
+        logger.info(
+            "Twitter: raw=%s after collector; stats=%s",
+            twitter_stats["raw_collected"],
+            twitter_stats,
+        )
         logger.info("--- Twitter Collector: Completed ---")
         twitter_success = True
 
@@ -627,6 +634,11 @@ def main_collect(
     # Apply on-topic anchor filtering (final safety layer)
     items_before_topic_filter = len(all_items)
     topic_classifications = {"on_topic": 0, "borderline": 0, "off_topic": 0}
+    topic_classifications_by_platform = {
+        "News": {"on_topic": 0, "borderline": 0, "off_topic": 0},
+        "X": {"on_topic": 0, "borderline": 0, "off_topic": 0},
+        "Reddit": {"on_topic": 0, "borderline": 0, "off_topic": 0},
+    }
     filtered_items = []
 
     for item in all_items:
@@ -634,6 +646,9 @@ def main_collect(
         topic_classifications[classification] = (
             topic_classifications.get(classification, 0) + 1
         )
+        platform_key = item.get("platform", "")
+        if platform_key in topic_classifications_by_platform:
+            topic_classifications_by_platform[platform_key][classification] += 1
         if classification == "on_topic":
             filtered_items.append(item)
 
@@ -645,6 +660,12 @@ def main_collect(
         f"{topic_classifications['borderline']} borderline, "
         f"{topic_classifications['off_topic']} off-topic. "
         f"Keeping {len(all_items)} on-topic items."
+    )
+    logger.info(
+        "Topic filtering by platform - News: %s, X: %s, Reddit: %s",
+        topic_classifications_by_platform["News"],
+        topic_classifications_by_platform["X"],
+        topic_classifications_by_platform["Reddit"],
     )
 
     # Apply max_results limit if specified
@@ -694,6 +715,7 @@ def main_collect(
         "dedupe_filtered": dedupe_filtered_total,
         "offtopic_filtered": offtopic_filtered,
         "topic_classifications": topic_classifications,
+        "topic_classifications_by_platform": topic_classifications_by_platform,
         "validation_failures": validation_failures,
     }
 

@@ -146,7 +146,7 @@ class TestXCollector:
         )
 
         def side_effect(url, headers=None, params=None, timeout=None):
-            if params and params.get("query") == "one":
+            if params and params.get("query") and "one" in params.get("query"):
                 return resp1
             return resp2
 
@@ -156,4 +156,20 @@ class TestXCollector:
         assert len(res) == 2
         assert any(u.endswith("/a") for u in urls)
         assert any(u.endswith("/b") for u in urls)
+
+    def test_query_includes_lang_filter_and_fallback_terms(self, monkeypatch):
+        fake = FakeResponse(200, {"data": [], "includes": {"users": []}})
+        captured_queries = []
+
+        def side_effect(url, headers=None, params=None, timeout=None):
+            captured_queries.append(params.get("query"))
+            return fake
+
+        with patch("requests.get", side_effect=side_effect):
+            res = x_collector.collect_twitter_posts([], "Topic")
+
+        assert res == []
+        # Ensure we fell back to default search terms and appended lang:en
+        assert captured_queries
+        assert all("lang:en" in q for q in captured_queries if q)
 
