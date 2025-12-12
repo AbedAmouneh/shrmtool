@@ -10,6 +10,7 @@ import logging
 import os
 from urllib.parse import urlparse
 from utils.config import NEWS_API_KEY, VERDICT_DATE
+from utils.url_utils import canonical_url
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,9 @@ def collect_news_articles() -> List[Dict[str, Any]]:
     logger.info("News Collector: Starting collection")
     logger.info(f"News Collector: Using verdict date filter: {VERDICT_DATE}")
     all_articles = []
-    seen_urls = set()  # Deduplicate within this collection run
+    seen_urls = set()  # Deduplicate within this collection run (raw URLs)
+    seen_canonical_urls = set()  # Deduplicate by canonical URL
+    seen_titles = set()  # Title Guard: deduplicate by normalized title within this batch
     query_count = 0
     error_count = 0
     total_raw = 0
@@ -258,25 +261,34 @@ def collect_news_articles() -> List[Dict[str, Any]]:
                         skipped_malformed += 1
                         logger.warning(f"News Collector: Article missing URL, skipping")
                         continue
-                    
-                    # Check for blocked domains
-                    try:
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(normalized["url"])
-                        domain = parsed_url.netloc.lower()
-                        if domain in [d.lower() for d in BLOCKED_DOMAINS]:
-                            skipped_count += 1
-                            logger.info(f"News Collector: Skipping blocked domain: {domain}")
-                            continue
-                    except Exception:
-                        pass  # If URL parsing fails, allow the article
 
-                    # Skip if already seen
-                    if normalized["url"] in seen_urls:
+                    # Get canonical URL for deduplication
+                    canonical = canonical_url(normalized["url"])
+                    if not canonical:
+                        skipped_count += 1
+                        skipped_malformed += 1
+                        logger.warning(f"News Collector: Article has invalid URL, skipping")
+                        continue
+
+                    # Skip if canonical URL already seen
+                    if canonical in seen_canonical_urls:
                         skipped_count += 1
                         continue
 
+                    # Title Guard: Check for duplicate titles (normalized)
+                    title = normalized.get("title", "").strip()
+                    if title:
+                        # Normalize title: lowercase, strip extra whitespace
+                        normalized_title = " ".join(title.lower().split())
+                        if normalized_title in seen_titles:
+                            skipped_count += 1
+                            logger.debug(f"News Collector: Skipping duplicate title: {title[:50]}...")
+                            continue
+                        seen_titles.add(normalized_title)
+
+                    # Mark as seen
                     seen_urls.add(normalized["url"])
+                    seen_canonical_urls.add(canonical)
                     all_articles.append(normalized)
                     normalized_count += 1
                 except Exception as e:

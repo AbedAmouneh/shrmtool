@@ -873,6 +873,18 @@ def main_collect(
                         canonical, platform, post_url, profile, current_date
                     )
 
+                # Verify dedupe persistence and log
+                from integrations.dedupe_store import get_seen_count, DB_PATH
+                from pathlib import Path
+                
+                # Ensure DB_PATH is absolute
+                abs_db_path = Path(DB_PATH).resolve()
+                total_seen = get_seen_count()
+                logger.info(
+                    f"Dedupe Store saved! Total seen URLs: {total_seen} "
+                    f"(DB path: {abs_db_path})"
+                )
+
                 logger.info(f"Successfully appended {len(rows)} rows")
                 logger.info("=" * 60)
                 if reddit_success and news_success:

@@ -27,7 +27,9 @@ def _get_connection() -> sqlite3.Connection:
     Open a connection to the SQLite DB and ensure the table exists.
     """
     # DB_PATH is evaluated at call time so monkeypatching works
-    conn = sqlite3.connect(DB_PATH)
+    # Resolve to absolute path to avoid issues when running from different directories
+    db_path = Path(DB_PATH).resolve()
+    conn = sqlite3.connect(str(db_path))
     # Create legacy table for backward compatibility
     conn.execute(
         """

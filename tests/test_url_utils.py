@@ -31,3 +31,32 @@ def test_is_valid_url_rejects_invalid():
     assert not is_valid_url("")
     assert not is_valid_url(None)
 
+
+def test_canonical_url_strips_all_query_params_for_news_domains():
+    """Test that News domains strip ALL query parameters, not just tracking params."""
+    # News domains should strip all query parameters
+    url1 = "http://news.com/a?ref=1"
+    url2 = "http://news.com/a?ref=2"
+    url3 = "http://news.com/a?r=1234&virt=abc"
+    
+    canonical1 = canonical_url(url1)
+    canonical2 = canonical_url(url2)
+    canonical3 = canonical_url(url3)
+    
+    # All should normalize to the same string (no query params)
+    expected = "https://news.com/a"
+    assert canonical1 == expected
+    assert canonical2 == expected
+    assert canonical3 == expected
+    assert canonical1 == canonical2 == canonical3
+
+
+def test_canonical_url_preserves_query_params_for_social_media():
+    """Test that social media domains preserve non-tracking query parameters."""
+    # YouTube should preserve query parameters (except tracking ones)
+    youtube_url = "https://youtube.com/watch?v=abc123&utm_source=twitter"
+    canonical = canonical_url(youtube_url)
+    # Should preserve v=abc123 but strip utm_source
+    assert "v=abc123" in canonical
+    assert "utm_source" not in canonical
+

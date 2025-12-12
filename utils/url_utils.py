@@ -31,6 +31,44 @@ TRACKING_PARAMS = {
     "mc_eid",
 }
 
+# Social media and video platforms where query parameters should be preserved
+# (for News domains, we strip ALL query parameters)
+SOCIAL_MEDIA_DOMAINS = {
+    "youtube.com",
+    "youtu.be",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "linkedin.com",
+    "instagram.com",
+    "reddit.com",
+    "tiktok.com",
+}
+
+
+def _is_social_media_domain(hostname: str) -> bool:
+    """
+    Check if a hostname belongs to a social media or video platform.
+    
+    Args:
+        hostname: Lowercase hostname (e.g., "youtube.com")
+        
+    Returns:
+        True if the domain is a social media/video platform
+    """
+    if not hostname:
+        return False
+    
+    # Remove www. prefix if present
+    domain = hostname.replace("www.", "")
+    
+    # Check exact match or subdomain
+    for social_domain in SOCIAL_MEDIA_DOMAINS:
+        if domain == social_domain or domain.endswith(f".{social_domain}"):
+            return True
+    
+    return False
+
 
 def canonical_url(url: str) -> str:
     """
@@ -38,7 +76,8 @@ def canonical_url(url: str) -> str:
 
     Operations:
     1. Normalize scheme (http -> https where reasonable)
-    2. Strip tracking parameters (utm_*, fbclid, gclid, etc.)
+    2. For News domains: Strip ALL query parameters (NewsAPI often adds ?r=1234 or ?virt=...)
+       For social media/video platforms: Strip only tracking parameters (utm_*, fbclid, gclid, etc.)
     3. Remove fragments (#...)
     4. Remove trailing slashes from path (except root)
     5. Lowercase hostname
@@ -51,6 +90,8 @@ def canonical_url(url: str) -> str:
 
     Examples:
         "https://example.com/article?utm_source=twitter#section" -> "https://example.com/article"
+        "https://news.com/story?r=1234" -> "https://news.com/story"
+        "https://news.com/story?ref=1" -> "https://news.com/story"
         "http://example.com/page/" -> "https://example.com/page"
         "https://Example.com/Path" -> "https://example.com/Path"
     """
@@ -79,12 +120,18 @@ def canonical_url(url: str) -> str:
     # Normalize path (remove trailing slash except for root)
     path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
 
-    # Strip tracking parameters from query string
-    query_params = parse_qs(parsed.query, keep_blank_values=False)
-    filtered_params = {
-        k: v for k, v in query_params.items() if k.lower() not in TRACKING_PARAMS
-    }
-    query = urlencode(filtered_params, doseq=True) if filtered_params else ""
+    # For News domains: strip ALL query parameters (NewsAPI often adds ?r=1234 or ?virt=...)
+    # For social media/video platforms: preserve query parameters (they may be important)
+    if _is_social_media_domain(hostname):
+        # Social media: strip only tracking parameters
+        query_params = parse_qs(parsed.query, keep_blank_values=False)
+        filtered_params = {
+            k: v for k, v in query_params.items() if k.lower() not in TRACKING_PARAMS
+        }
+        query = urlencode(filtered_params, doseq=True) if filtered_params else ""
+    else:
+        # News domains: strip ALL query parameters
+        query = ""
 
     # Remove fragment
     fragment = ""
