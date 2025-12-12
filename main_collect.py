@@ -17,6 +17,7 @@ from collectors.x_collector import collect_twitter_posts
 
 # Import integrations
 from integrations.google_sheets import append_rows
+from integrations.linkedin_google_collector import LinkedInGoogleCollector
 from integrations.dedupe_store import (
     has_seen,
     mark_seen,
@@ -508,6 +509,13 @@ def main_collect(
         "normalized": 0,
         "errors": 0,
     }
+    linkedin_stats = {
+        "raw_collected": 0,
+        "filtered_date": 0,
+        "filtered_dedupe": 0,
+        "normalized": 0,
+        "errors": 0,
+    }
 
     # Collect Reddit posts
     reddit_success = False
@@ -631,6 +639,46 @@ def main_collect(
         logger.error(f"Twitter Collector: Failed with error: {e}", exc_info=True)
         logger.warning("Continuing despite Twitter collection failure")
 
+    # Collect LinkedIn posts via Google Custom Search
+    linkedin_success = False
+    try:
+        logger.info("--- LinkedIn Google Collector: Starting ---")
+        collector = LinkedInGoogleCollector()
+        linkedin_items = collector.collect(keywords=search_terms, topic=topic)
+        linkedin_stats["raw_collected"] = len(linkedin_items)
+        logger.info(f"LinkedIn: Collected {linkedin_stats['raw_collected']} raw items")
+
+        for item in linkedin_items:
+            url = item.get("post_link")
+            if not url:
+                continue
+
+            # Process with canonical URL dedupe (LinkedIn: detect reposts like X)
+            if _process_item_with_dedupe(
+                item,
+                "LinkedIn-Google",
+                linkedin_stats,
+                all_items,
+                new_urls,
+                new_canonical_items,
+            ):
+                linkedin_stats["normalized"] += 1
+
+        logger.info(
+            f"LinkedIn: {linkedin_stats['normalized']} normalized, "
+            f"{linkedin_stats['filtered_date']} filtered by date, "
+            f"{linkedin_stats['filtered_dedupe']} filtered by dedupe"
+        )
+        logger.info("--- LinkedIn Google Collector: Completed ---")
+        linkedin_success = True
+
+    except Exception as e:
+        linkedin_stats["errors"] = 1
+        logger.error(
+            f"LinkedIn Google Collector: Failed with error: {e}", exc_info=True
+        )
+        logger.warning("Continuing despite LinkedIn collection failure")
+
     # Apply on-topic anchor filtering (final safety layer)
     items_before_topic_filter = len(all_items)
     topic_classifications = {"on_topic": 0, "borderline": 0, "off_topic": 0}
@@ -638,6 +686,7 @@ def main_collect(
         "News": {"on_topic": 0, "borderline": 0, "off_topic": 0},
         "X": {"on_topic": 0, "borderline": 0, "off_topic": 0},
         "Reddit": {"on_topic": 0, "borderline": 0, "off_topic": 0},
+        "LinkedIn-Google": {"on_topic": 0, "borderline": 0, "off_topic": 0},
     }
     filtered_items = []
 
@@ -698,12 +747,14 @@ def main_collect(
         reddit_stats["filtered_dedupe"]
         + news_stats["filtered_dedupe"]
         + twitter_stats["filtered_dedupe"]
+        + linkedin_stats["filtered_dedupe"]
     )
     offtopic_filtered = (
         topic_classifications["borderline"] + topic_classifications["off_topic"]
     )
     news_appended_count = sum(1 for r in rows if r[1] == "News")
     twitter_appended_count = sum(1 for r in rows if r[1] in ("X", "Twitter"))
+    linkedin_appended_count = sum(1 for r in rows if r[1] == "LinkedIn-Google")
     repost_appended_count = sum(1 for r in rows if str(r[8]).lower() == "repost")
 
     global LAST_RUN_SUMMARY
@@ -711,6 +762,7 @@ def main_collect(
         "total_new": len(rows),
         "news_appended": news_appended_count,
         "twitter_appended": twitter_appended_count,
+        "linkedin_appended": linkedin_appended_count,
         "repost_appended": repost_appended_count,
         "dedupe_filtered": dedupe_filtered_total,
         "offtopic_filtered": offtopic_filtered,
@@ -724,6 +776,7 @@ def main_collect(
         reddit_stats["raw_collected"]
         + news_stats["raw_collected"]
         + twitter_stats["raw_collected"]
+        + linkedin_stats["raw_collected"]
     )
     total_filtered = (
         reddit_stats["filtered_date"]
@@ -732,6 +785,8 @@ def main_collect(
         + news_stats["filtered_dedupe"]
         + twitter_stats["filtered_date"]
         + twitter_stats["filtered_dedupe"]
+        + linkedin_stats["filtered_date"]
+        + linkedin_stats["filtered_dedupe"]
     )
     total_normalized = len(rows)
 
@@ -741,14 +796,15 @@ def main_collect(
     logger.info(f"    - Reddit: {reddit_stats['raw_collected']} raw")
     logger.info(f"    - News: {news_stats['raw_collected']} raw")
     logger.info(f"    - Twitter: {twitter_stats['raw_collected']} raw")
+    logger.info(f"    - LinkedIn: {linkedin_stats['raw_collected']} raw")
     logger.info(f"  Total items filtered out: {total_filtered}")
     logger.info(
         f"    - Filtered by date: "
-        f"{reddit_stats['filtered_date'] + news_stats['filtered_date'] + twitter_stats['filtered_date']}"
+        f"{reddit_stats['filtered_date'] + news_stats['filtered_date'] + twitter_stats['filtered_date'] + linkedin_stats['filtered_date']}"
     )
     logger.info(
         f"    - Filtered by dedupe: "
-        f"{reddit_stats['filtered_dedupe'] + news_stats['filtered_dedupe'] + twitter_stats['filtered_dedupe']}"
+        f"{reddit_stats['filtered_dedupe'] + news_stats['filtered_dedupe'] + twitter_stats['filtered_dedupe'] + linkedin_stats['filtered_dedupe']}"
     )
     logger.info(f"  Total items normalized: {total_normalized}")
     if max_results and original_count > max_results:

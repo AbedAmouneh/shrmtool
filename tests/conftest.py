@@ -102,6 +102,24 @@ def mock_twitter_collector(monkeypatch):
         pass
 
 
+@pytest.fixture(autouse=True)
+def mock_linkedin_collector(monkeypatch):
+    """
+    Autouse fixture to mock LinkedIn Google collector in tests that don't care about it.
+    Returns an empty list to keep existing tests stable.
+    """
+    try:
+        import main_collect
+        from unittest.mock import MagicMock
+
+        mock_linkedin_instance = MagicMock()
+        mock_linkedin_instance.collect.return_value = []
+        mock_linkedin_class = MagicMock(return_value=mock_linkedin_instance)
+        monkeypatch.setattr(main_collect, "LinkedInGoogleCollector", mock_linkedin_class)
+    except ImportError:
+        pass
+
+
 @pytest.fixture
 def mock_canonical_dedupe(monkeypatch):
     """

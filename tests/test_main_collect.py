@@ -47,6 +47,8 @@ class TestMainCollectHappyPath:
         ) as mock_reddit, patch(
             "main_collect.collect_news_articles", return_value=[news_article]
         ) as mock_news, patch(
+            "main_collect.LinkedInGoogleCollector"
+        ) as mock_linkedin_class, patch(
             "main_collect.has_seen", return_value=False
         ), patch(
             "main_collect.has_seen_canonical", return_value=(False, None)
@@ -59,6 +61,10 @@ class TestMainCollectHappyPath:
         ) as mock_mark_seen, patch(
             "main_collect.mark_seen_canonical"
         ) as mock_mark_seen_canonical:
+            # Mock LinkedIn collector instance
+            mock_linkedin_instance = MagicMock()
+            mock_linkedin_instance.collect.return_value = []
+            mock_linkedin_class.return_value = mock_linkedin_instance
 
             count = main_collect.main_collect(["SHRM", "verdict"], "SHRM Trial Verdict")
 
@@ -236,12 +242,18 @@ class TestMainCollectDateFiltering:
         with patch(
             "main_collect.collect_reddit_posts", return_value=[post_before, post_after]
         ), patch("main_collect.collect_news_articles", return_value=[]), patch(
+            "main_collect.LinkedInGoogleCollector"
+        ) as mock_linkedin_class, patch(
             "main_collect.has_seen", return_value=False
         ), patch(
             "main_collect.append_rows"
         ) as mock_append, patch(
             "main_collect.mark_seen"
         ) as mock_mark_seen:
+            # Mock LinkedIn collector instance
+            mock_linkedin_instance = MagicMock()
+            mock_linkedin_instance.collect.return_value = []
+            mock_linkedin_class.return_value = mock_linkedin_instance
 
             count = main_collect.main_collect(["test"], "Test Topic")
 
@@ -874,7 +886,9 @@ class TestTelegramNotifications:
 
         with patch("main_collect.collect_reddit_posts", return_value=[]), patch(
             "main_collect.collect_news_articles", return_value=[]
-        ), patch("main_collect.has_seen", return_value=False), patch(
+        ), patch("main_collect.LinkedInGoogleCollector") as mock_linkedin_class, patch(
+            "main_collect.has_seen", return_value=False
+        ), patch(
             "main_collect.append_rows"
         ), patch(
             "main_collect.mark_seen"
@@ -883,6 +897,10 @@ class TestTelegramNotifications:
         ), patch(
             "main_collect.send_telegram_message"
         ) as mock_send:
+            # Mock LinkedIn collector instance
+            mock_linkedin_instance = MagicMock()
+            mock_linkedin_instance.collect.return_value = []
+            mock_linkedin_class.return_value = mock_linkedin_instance
 
             with pytest.raises(SystemExit):
                 main_collect.main()
