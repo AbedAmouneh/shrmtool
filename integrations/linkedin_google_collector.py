@@ -27,6 +27,160 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 
+# Cutoff date: only accept posts from December 2025 onwards (SHRM verdict was Dec 5, 2025)
+CUTOFF_DATE = datetime(2025, 12, 1, tzinfo=EASTERN)
+
+# Month name mappings for date parsing
+MONTH_NAMES = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+
+def _extract_date_from_text(text: str) -> Optional[datetime]:
+    """
+    Extract a date from text using common date patterns.
+    
+    Args:
+        text: Text that may contain a date (e.g., snippet or title)
+        
+    Returns:
+        Datetime object or None if no date found
+    """
+    if not text:
+        return None
+    
+    text_lower = text.lower()
+    
+    # Pattern 1: "Dec 5, 2025" or "December 5, 2025" or "Dec 5 2025"
+    pattern1 = r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:,?\s+|\s+)(\d{4})\b"
+    match = re.search(pattern1, text_lower)
+    if match:
+        month_str, day_str, year_str = match.groups()
+        month = MONTH_NAMES.get(month_str)
+        if month:
+            try:
+                return datetime(int(year_str), month, int(day_str), tzinfo=EASTERN)
+            except ValueError:
+                pass
+    
+    # Pattern 2: "5 Dec 2025" or "5 December 2025"
+    pattern2 = r"\b(\d{1,2})\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{4})\b"
+    match = re.search(pattern2, text_lower)
+    if match:
+        day_str, month_str, year_str = match.groups()
+        month = MONTH_NAMES.get(month_str)
+        if month:
+            try:
+                return datetime(int(year_str), month, int(day_str), tzinfo=EASTERN)
+            except ValueError:
+                pass
+    
+    # Pattern 3: "12/05/2025" or "2025-12-05"
+    pattern3 = r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"
+    match = re.search(pattern3, text)
+    if match:
+        try:
+            m, d, y = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            return datetime(y, m, d, tzinfo=EASTERN)
+        except ValueError:
+            pass
+    
+    pattern4 = r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"
+    match = re.search(pattern4, text)
+    if match:
+        try:
+            y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            return datetime(y, m, d, tzinfo=EASTERN)
+        except ValueError:
+            pass
+    
+    return None
+
+
+def _contains_old_date_marker(text: str) -> Optional[str]:
+    """
+    Check if text contains markers of old dates (pre-December 2025).
+    
+    Args:
+        text: Text to check
+        
+    Returns:
+        The old date marker found, or None if text is acceptable
+    """
+    if not text:
+        return None
+    
+    text_lower = text.lower()
+    
+    # Check for old years (standalone years like "in 2020")
+    old_years = ["2020", "2021", "2022", "2023", "2024"]
+    for year in old_years:
+        # Only match if it's a standalone year, not part of a larger number
+        if re.search(rf"\b{year}\b", text_lower):
+            return year
+    
+    # Check for months in 2025 before December
+    early_2025_months = [
+        "jan 2025", "january 2025",
+        "feb 2025", "february 2025",
+        "mar 2025", "march 2025",
+        "apr 2025", "april 2025",
+        "may 2025",
+        "jun 2025", "june 2025",
+        "jul 2025", "july 2025",
+        "aug 2025", "august 2025",
+        "sep 2025", "sept 2025", "september 2025",
+        "oct 2025", "october 2025",
+        "nov 2025", "november 2025",
+    ]
+    for marker in early_2025_months:
+        if marker in text_lower:
+            return marker
+    
+    return None
+
+
+def _validate_post_date(item_data: Dict[str, Any]) -> tuple[bool, Optional[str], Optional[datetime]]:
+    """
+    Validate that a post is from after the CUTOFF_DATE.
+    
+    Args:
+        item_data: Raw item from Google Custom Search API
+        
+    Returns:
+        Tuple of (is_valid, reason_if_invalid, extracted_date)
+    """
+    title = item_data.get("title", "") or ""
+    snippet = item_data.get("snippet", "") or ""
+    combined_text = f"{title} {snippet}"
+    
+    # First, check for explicit old date markers
+    old_marker = _contains_old_date_marker(combined_text)
+    if old_marker:
+        return False, f"contains old date marker '{old_marker}'", None
+    
+    # Try to extract an actual date
+    extracted_date = _extract_date_from_text(combined_text)
+    
+    if extracted_date:
+        if extracted_date < CUTOFF_DATE:
+            return False, f"extracted date {extracted_date.strftime('%Y-%m-%d')} is before cutoff", extracted_date
+        return True, None, extracted_date
+    
+    # If no date found, allow the post (we'll use today's date)
+    return True, None, None
+
 
 def _extract_linkedin_profile(link: str) -> str:
     """
@@ -191,10 +345,10 @@ class LinkedInGoogleCollector:
         total_found = 0
         total_validated = 0
         relevance_filtered = 0  # Track items filtered by relevance
+        date_filtered = 0  # Track items filtered by old date
         
-        # Get today's date in Eastern timezone, formatted as MM/DD/YYYY
+        # Get today's date in Eastern timezone as fallback
         today_dt = datetime.now(EASTERN)
-        date_posted = format_date_mmddyyyy(today_dt)
         
         for idx, keyword in enumerate(keywords, start=1):
             logger.info(
@@ -238,6 +392,22 @@ class LinkedInGoogleCollector:
                         relevance_filtered += 1
                         continue
                     
+                    # Validate post date (filter out old "zombie" posts)
+                    is_date_valid, date_reason, extracted_date = _validate_post_date(item_data)
+                    if not is_date_valid:
+                        date_filtered += 1
+                        logger.info(
+                            f"LinkedIn Google Collector: Skipping old post ({date_reason}): "
+                            f"{item_data.get('link', 'unknown')[:100]}"
+                        )
+                        continue
+                    
+                    # Use extracted date if available, otherwise use today
+                    if extracted_date:
+                        date_posted = format_date_mmddyyyy(extracted_date)
+                    else:
+                        date_posted = format_date_mmddyyyy(today_dt)
+                    
                     try:
                         normalized = self._normalize_item(
                             item_data, topic, date_posted, seen_urls
@@ -271,7 +441,7 @@ class LinkedInGoogleCollector:
         
         logger.info(
             f"LinkedIn Google Collector: Completed - {total_found} items found, "
-            f"{relevance_filtered} filtered by relevance, "
+            f"{relevance_filtered} filtered by relevance, {date_filtered} filtered by old date, "
             f"{total_validated} passed validation, {len(all_items)} unique items collected"
         )
         
@@ -279,6 +449,12 @@ class LinkedInGoogleCollector:
             logger.info(
                 f"LinkedIn Google Collector: Skipped {relevance_filtered} items for missing "
                 f"verdict keywords or excluded content"
+            )
+        
+        if date_filtered > 0:
+            logger.info(
+                f"LinkedIn Google Collector: Skipped {date_filtered} items for being "
+                f"old posts (before {CUTOFF_DATE.strftime('%Y-%m-%d')})"
             )
         
         return all_items

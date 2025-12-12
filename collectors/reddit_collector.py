@@ -67,6 +67,62 @@ def _strip_html(text: str) -> str:
     return text
 
 
+def _clean_reddit_summary(entry: Dict[str, Any], title: str) -> str:
+    """
+    Extract and clean Reddit post summary, removing boilerplate text.
+    
+    Args:
+        entry: Raw RSS entry from feedparser
+        title: The post title (used as fallback)
+        
+    Returns:
+        Cleaned summary text
+    """
+    raw_text = ""
+    
+    # 1. Prefer entry.content[0].value if available (often has the real text)
+    content_list = entry.get("content", [])
+    if content_list and isinstance(content_list, list) and len(content_list) > 0:
+        raw_text = content_list[0].get("value", "") if isinstance(content_list[0], dict) else ""
+    
+    # 2. Fall back to summary or description if content was empty
+    if not raw_text:
+        raw_text = entry.get("summary", "") or entry.get("description", "") or ""
+    
+    # 2. Strip HTML tags
+    text = _strip_html(raw_text)
+    
+    # 3. Remove common Reddit RSS boilerplate patterns
+    # Pattern: "submitted by /u/username to r/subreddit"
+    text = re.sub(r"submitted\s+by\s+/?u/\w+\s+to\s+r/\w+", "", text, flags=re.IGNORECASE)
+    
+    # Pattern: "[link]" and "[comments]" markers
+    text = re.sub(r"\[link\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[comments\]", "", text, flags=re.IGNORECASE)
+    
+    # Pattern: "submitted by /u/username"
+    text = re.sub(r"submitted\s+by\s+/?u/\w+", "", text, flags=re.IGNORECASE)
+    
+    # Pattern: "to r/subreddit"
+    text = re.sub(r"\s+to\s+r/\w+", "", text, flags=re.IGNORECASE)
+    
+    # Pattern: standalone "/u/username" or "u/username"
+    text = re.sub(r"/?u/\w+", "", text)
+    
+    # Pattern: standalone "r/subreddit"
+    text = re.sub(r"\br/\w+\b", "", text)
+    
+    # Normalize whitespace after removals
+    text = re.sub(r"\s+", " ", text).strip()
+    
+    # 4. If the cleaned summary is too short (< 20 chars), use the title
+    if len(text) < 20:
+        # Use title as summary, but limit to 300 chars
+        return title[:300] if title else "No Content"
+    
+    return text
+
+
 def _parse_rss_date(date_str: str) -> Optional[datetime]:
     """
     Parse an RFC 3339 date string from RSS feed.
@@ -288,10 +344,11 @@ class RedditCollector:
                 logger.warning(f"Reddit RSS Collector: Invalid URL: {link}")
                 return None
             
-            # Extract title and summary
+            # Extract title
             title = entry.get("title", "").strip()
-            summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
-            summary = _strip_html(summary_raw)
+            
+            # Extract and clean summary (removes boilerplate, prefers content over summary)
+            summary = _clean_reddit_summary(entry, title)
             
             # Skip if title is empty
             if not title:
@@ -327,7 +384,7 @@ class RedditCollector:
                 "post_link": link,
                 "topic": topic,
                 "title": title,
-                "summary": summary or title[:300],  # Fallback to title if no summary
+                "summary": summary,  # Already cleaned and falls back to title if needed
                 "tone": "N/A",
                 "category": "",
                 "views": "N/A",
@@ -339,8 +396,8 @@ class RedditCollector:
                 "verified": "N/A",
                 "notes": "",
                 # Preserve fields for topic filtering
-                "description": summary or title[:300],
-                "selftext": summary or "",
+                "description": summary,
+                "selftext": summary,
             }
             
             # Apply platform defaults and validate

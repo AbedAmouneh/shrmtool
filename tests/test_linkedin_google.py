@@ -12,6 +12,10 @@ from integrations.linkedin_google_collector import (
     _clean_title,
     _extract_linkedin_profile,
     _is_verdict_relevant,
+    _extract_date_from_text,
+    _contains_old_date_marker,
+    _validate_post_date,
+    CUTOFF_DATE,
 )
 from utils.time_utils import EASTERN
 
@@ -26,7 +30,7 @@ class FakeResponse:
 
     def json(self):
         return self._json_data
-    
+
     def raise_for_status(self):
         """Mock raise_for_status for compatibility."""
         if self.status_code >= 400:
@@ -67,9 +71,15 @@ class TestLinkedInGoogleCollector:
         assert len(results) == 1
         item = results[0]
         assert item["platform"] == "LinkedIn-Google"
-        assert item["post_link"] == "https://www.linkedin.com/posts/johndoe-activity-1234567890"
+        assert (
+            item["post_link"]
+            == "https://www.linkedin.com/posts/johndoe-activity-1234567890"
+        )
         assert item["title"] == "SHRM Verdict Discussion"  # " | LinkedIn" removed
-        assert item["summary"] == "The SHRM verdict has sparked discussion in the HR community..."
+        assert (
+            item["summary"]
+            == "The SHRM verdict has sparked discussion in the HR community..."
+        )
         assert item["description"] == item["summary"]  # Same as snippet
         assert item["profile_link"] == "https://www.linkedin.com/in/johndoe/"
         assert item["followers"] == "N/A"
@@ -314,7 +324,9 @@ class TestLinkedInGoogleCollector:
             collector.collect()  # No keywords provided
 
         # Should have called with default keywords
-        assert call_count[0] == 4  # Default: ["SHRM verdict", "Johnny C. Taylor verdict", "SHRM CEO verdict", "SHRM discrimination"]
+        assert (
+            call_count[0] == 4
+        )  # Default: ["SHRM verdict", "Johnny C. Taylor verdict", "SHRM CEO verdict", "SHRM discrimination"]
 
     def test_custom_topic(self, monkeypatch):
         """Test that custom topic is used."""
@@ -453,7 +465,7 @@ class TestHelperFunctions:
             "link": "https://www.linkedin.com/posts/user1-activity-1",
             "snippet": "General discussion about SHRM",
         }
-        
+
         # Item with verdict keywords - should pass
         relevant_item = {
             "title": "SHRM Verdict Update | LinkedIn",
@@ -469,7 +481,9 @@ class TestHelperFunctions:
 
         # Only relevant item should be included
         assert len(results) == 1
-        assert results[0]["post_link"] == "https://www.linkedin.com/posts/user2-activity-2"
+        assert (
+            results[0]["post_link"] == "https://www.linkedin.com/posts/user2-activity-2"
+        )
 
     def test_relevance_filtering_excludes_robby_starbuck(self, monkeypatch):
         """Test that Robby Starbuck posts are filtered out."""
@@ -488,3 +502,184 @@ class TestHelperFunctions:
         # Should be filtered out
         assert len(results) == 0
 
+
+class TestDateExtraction:
+    """Tests for date extraction and validation functions."""
+
+    def test_extract_date_dec_5_2025(self):
+        """Test extracting 'Dec 5, 2025' format."""
+        text = "The SHRM verdict was announced on Dec 5, 2025"
+        result = _extract_date_from_text(text)
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 12
+        assert result.day == 5
+
+    def test_extract_date_december_2020(self):
+        """Test extracting 'December 2020' format (old date)."""
+        text = "This happened in December 10, 2020"
+        result = _extract_date_from_text(text)
+        assert result is not None
+        assert result.year == 2020
+        assert result.month == 12
+
+    def test_extract_date_iso_format(self):
+        """Test extracting ISO date format '2025-12-10'."""
+        text = "Posted on 2025-12-10"
+        result = _extract_date_from_text(text)
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 12
+        assert result.day == 10
+
+    def test_extract_date_us_format(self):
+        """Test extracting US date format '12/05/2025'."""
+        text = "Date: 12/05/2025"
+        result = _extract_date_from_text(text)
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 12
+        assert result.day == 5
+
+    def test_extract_date_no_date(self):
+        """Test that None is returned when no date found."""
+        text = "Just a general discussion about SHRM"
+        result = _extract_date_from_text(text)
+        assert result is None
+
+    def test_contains_old_date_marker_2020(self):
+        """Test that 2020 is detected as old date marker."""
+        text = "This was posted back in 2020"
+        result = _contains_old_date_marker(text)
+        assert result == "2020"
+
+    def test_contains_old_date_marker_2023(self):
+        """Test that 2023 is detected as old date marker."""
+        text = "Event from 2023"
+        result = _contains_old_date_marker(text)
+        assert result == "2023"
+
+    def test_contains_old_date_marker_feb_2025(self):
+        """Test that Feb 2025 is detected as old date marker."""
+        text = "This happened in February 2025"
+        result = _contains_old_date_marker(text)
+        assert result == "february 2025"
+
+    def test_contains_old_date_marker_nov_2025(self):
+        """Test that Nov 2025 is detected as old date marker."""
+        text = "Posted in Nov 2025"
+        result = _contains_old_date_marker(text)
+        assert result == "nov 2025"
+
+    def test_contains_old_date_marker_dec_2025_ok(self):
+        """Test that Dec 2025 is NOT detected as old (it's allowed)."""
+        text = "Posted in Dec 2025"
+        result = _contains_old_date_marker(text)
+        assert result is None  # December 2025 is allowed
+
+    def test_validate_post_date_old_2020(self):
+        """Test that posts from 2020 are rejected."""
+        item = {
+            "title": "SHRM Verdict Update",
+            "snippet": "This article is from 2020 about SHRM",
+        }
+        is_valid, reason, _ = _validate_post_date(item)
+        assert is_valid is False
+        assert "2020" in reason
+
+    def test_validate_post_date_early_2025(self):
+        """Test that posts from early 2025 (before Dec) are rejected."""
+        item = {
+            "title": "SHRM Trial Coverage",
+            "snippet": "Published in Feb 2025 about the SHRM trial",
+        }
+        is_valid, reason, _ = _validate_post_date(item)
+        assert is_valid is False
+        assert "feb 2025" in reason.lower()
+
+    def test_validate_post_date_dec_2025_accepted(self):
+        """Test that posts from Dec 2025 are accepted."""
+        item = {
+            "title": "SHRM Verdict Update",
+            "snippet": "The verdict on Dec 5, 2025 found SHRM liable for damages",
+        }
+        is_valid, reason, extracted_date = _validate_post_date(item)
+        assert is_valid is True
+        assert reason is None
+        assert extracted_date is not None
+        assert extracted_date.year == 2025
+        assert extracted_date.month == 12
+
+    def test_validate_post_date_no_date_accepted(self):
+        """Test that posts without dates are accepted (use today's date)."""
+        item = {
+            "title": "SHRM Verdict Discussion",
+            "snippet": "General discussion about the verdict",
+        }
+        is_valid, reason, extracted_date = _validate_post_date(item)
+        assert is_valid is True
+        assert reason is None
+        assert extracted_date is None  # No date extracted, will use today
+
+    def test_date_filtering_rejects_old_post_in_collect(self, monkeypatch):
+        """Test that old posts from 2020 are rejected during collection."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-api-key")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "test-cse-id")
+
+        old_item = {
+            "title": "SHRM Verdict Discussion | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user-activity-1",
+            "snippet": "This post is from 2020 about the SHRM trial verdict",
+        }
+
+        fake_response = FakeResponse(200, {"items": [old_item]})
+
+        with patch("requests.get", return_value=fake_response):
+            collector = LinkedInGoogleCollector()
+            results = collector.collect()
+
+        # Should be filtered out due to old date
+        assert len(results) == 0
+
+    def test_date_filtering_rejects_early_2025_in_collect(self, monkeypatch):
+        """Test that posts from early 2025 are rejected during collection."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-api-key")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "test-cse-id")
+
+        early_2025_item = {
+            "title": "SHRM Trial Update | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user-activity-2",
+            "snippet": "Coverage from March 2025 about the ongoing SHRM trial",
+        }
+
+        fake_response = FakeResponse(200, {"items": [early_2025_item]})
+
+        with patch("requests.get", return_value=fake_response):
+            collector = LinkedInGoogleCollector()
+            results = collector.collect()
+
+        # Should be filtered out due to early 2025 date
+        assert len(results) == 0
+
+    def test_date_filtering_accepts_dec_2025_in_collect(self, monkeypatch):
+        """Test that posts from Dec 2025 are accepted during collection."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-api-key")
+        monkeypatch.setenv("GOOGLE_CSE_ID", "test-cse-id")
+
+        dec_2025_item = {
+            "title": "SHRM Verdict Announcement | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user-activity-3",
+            "snippet": "On Dec 10, 2025, the jury found SHRM liable for damages",
+        }
+
+        fake_response = FakeResponse(200, {"items": [dec_2025_item]})
+
+        with patch("requests.get", return_value=fake_response):
+            collector = LinkedInGoogleCollector()
+            results = collector.collect()
+
+        # Should be accepted
+        assert len(results) == 1
+        assert (
+            results[0]["post_link"] == "https://www.linkedin.com/posts/user-activity-3"
+        )
