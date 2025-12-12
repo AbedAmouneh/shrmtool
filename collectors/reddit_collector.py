@@ -1,230 +1,373 @@
 """
-Reddit content collector using snscrape.
+Reddit content collector using RSS feeds.
 
-This module collects SHRM-related posts from Reddit by running snscrape
-search commands and parsing the JSONL output.
+This module collects SHRM-related posts from Reddit by querying Reddit's public RSS feeds.
+No authentication or API keys required.
 """
 
-import json
-import subprocess
-from typing import List, Dict, Any, Optional
 import logging
+import re
+from datetime import datetime
+from html import unescape
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urlparse
+
+import feedparser
+import pytz
+import requests
+
+from utils.schema import build_row, validate_row
+from utils.time_utils import format_date_mmddyyyy, is_after_verdict_date, UTC, EASTERN
+from utils.url_utils import is_valid_url
+from utils.platform_rules import apply_platform_defaults, validate_platform_item
 
 logger = logging.getLogger(__name__)
 
-# Search terms for Reddit
-REDDIT_SEARCH_TERMS = [
-    "SHRM",
-    "SHRM discrimination",
-    "SHRM trial",
+# Base URL for Reddit RSS search
+REDDIT_RSS_BASE_URL = "https://www.reddit.com/search.rss"
+
+# Custom User-Agent to avoid Reddit blocking
+REDDIT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+# Default search terms
+DEFAULT_SEARCH_TERMS = [
     "SHRM verdict",
-    "Society for Human Resource Management verdict",
+    "Johnny C. Taylor",
+    "SHRM lawsuit",
+    "SHRM discrimination",
 ]
 
+# Backward compatibility alias
+REDDIT_SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
-def run_snscrape_search(query: str, max_results: int = 100) -> List[Dict[str, Any]]:
+
+def _strip_html(text: str) -> str:
     """
-    Run snscrape reddit-search command and parse JSONL output.
-
+    Strip HTML tags from text and unescape HTML entities.
+    
     Args:
-        query: Search query string
-        max_results: Maximum number of results to fetch (default: 100)
-
+        text: Text that may contain HTML
+        
     Returns:
-        List of parsed Reddit post dictionaries
-
-    Raises:
-        subprocess.CalledProcessError: If snscrape command fails
-        ValueError: If output cannot be parsed
+        Plain text with HTML removed
     """
-    results = []
+    if not text:
+        return ""
+    
+    # Remove HTML tags using regex (simple approach)
+    text = re.sub(r"<[^>]+>", "", text)
+    # Unescape HTML entities (&amp; -> &, etc.)
+    text = unescape(text)
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    
+    return text
 
+
+def _parse_rss_date(date_str: str) -> Optional[datetime]:
+    """
+    Parse an RFC 3339 date string from RSS feed.
+    
+    Args:
+        date_str: Date string in RFC 3339 format (e.g., "2025-12-12T10:30:00+00:00")
+        
+    Returns:
+        Datetime object in UTC, or None if parsing fails
+    """
+    if not date_str:
+        return None
+    
     try:
-        # Run snscrape command
-        # Format: snscrape --jsonl reddit-search "query"
-        # Note: Global options (--jsonl, --since, etc.) must come before the scraper name
-        cmd = ["snscrape", "--jsonl", "reddit-search", query]
-
-        logger.info(f"Running snscrape for query: {query}")
-        process = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-            check=False,  # Don't raise on non-zero exit
-        )
-
-        if process.returncode != 0:
-            logger.warning(
-                f"snscrape returned non-zero exit code {process.returncode} "
-                f"for query '{query}': {process.stderr}"
-            )
-            # Continue anyway, might still have partial results
-
-        # Parse JSONL output (one JSON object per line)
-        for line in process.stdout.strip().split("\n"):
-            if not line.strip():
-                continue
-
-            try:
-                post_data = json.loads(line)
-                results.append(post_data)
-
-                if len(results) >= max_results:
-                    break
-
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse JSON line: {e}")
-                continue
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"snscrape timed out for query: {query}")
-    except FileNotFoundError:
-        raise RuntimeError(
-            "snscrape not found. Please install it: pip install snscrape"
-        )
+        # feedparser provides parsed time tuple via _parse_date
+        # This handles various RSS date formats
+        try:
+            parsed = feedparser._parse_date(date_str)
+            if parsed:
+                # Convert to datetime (parsed is a 9-tuple: (year, month, day, hour, minute, second, weekday, yearday, tz)
+                dt = datetime(*parsed[:6], tzinfo=UTC)
+                return dt
+        except (AttributeError, TypeError):
+            # _parse_date might not be available or might fail
+            pass
+    except Exception:
+        pass
+    
+    # Fallback: try ISO format parsing
+    try:
+        # Handle common formats
+        date_clean = date_str.strip()
+        if date_clean.endswith("Z"):
+            date_clean = date_clean.replace("Z", "+00:00")
+        
+        dt = datetime.fromisoformat(date_clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt
     except Exception as e:
-        logger.error(f"Error running snscrape for query '{query}': {e}")
-        raise
-
-    return results
+        logger.warning(f"Failed to parse RSS date '{date_str}': {e}")
+        return None
 
 
-def normalize_reddit_post(post_data: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_profile_link(author: str) -> str:
     """
-    Normalize a Reddit post from snscrape output to a standard format.
-
+    Extract Reddit profile link from author field.
+    
     Args:
-        post_data: Raw post data from snscrape JSONL
-
+        author: Author string (e.g., "/u/username" or "username")
+        
     Returns:
-        Normalized dictionary with fields: url, title, date, subreddit,
-        score, numComments, selftext, username
+        Full profile URL or "N/A"
     """
-    # Extract fields with fallbacks
-    url = post_data.get("url", "")
-    title = post_data.get("title", "")
-
-    # Date handling - snscrape uses different field names
-    date_str = (
-        post_data.get("date")
-        or post_data.get("created")
-        or post_data.get("created_utc")
-    )
-    if isinstance(date_str, (int, float)):
-        # Unix timestamp - convert to ISO string
-        from datetime import datetime
-        import pytz
-
-        dt = datetime.fromtimestamp(date_str, tz=pytz.UTC)
-        date = dt.isoformat()
-    elif isinstance(date_str, str):
-        # ISO string - use as is
-        date = date_str
-    else:
-        # Try to get from other fields or use None
-        date = None
-
-    subreddit = (
-        post_data.get("subreddit", {}).get("name", "")
-        if isinstance(post_data.get("subreddit"), dict)
-        else post_data.get("subreddit", "")
-    )
-    score = post_data.get("score", 0) or 0
-    num_comments = (
-        post_data.get("numComments", 0) or post_data.get("commentCount", 0) or 0
-    )
-    selftext = post_data.get("selftext", "") or post_data.get("content", "") or ""
-
-    # Author/username
-    author = post_data.get("author") or post_data.get("user")
-    if isinstance(author, dict):
-        username = author.get("username", "") or author.get("name", "")
-    else:
-        username = author or ""
-
-    return {
-        "url": url,
-        "title": title,
-        "date": date,
-        "subreddit": subreddit,
-        "score": score,
-        "numComments": num_comments,
-        "selftext": selftext,
-        "username": username,
-    }
+    if not author:
+        return "N/A"
+    
+    # Remove common prefixes
+    author = author.strip()
+    if author.startswith("/u/"):
+        author = author[3:]
+    elif author.startswith("u/"):
+        author = author[2:]
+    
+    if not author:
+        return "N/A"
+    
+    return f"https://www.reddit.com/user/{author}"
 
 
+class RedditCollector:
+    """Collector for Reddit posts via RSS feeds."""
+    
+    def __init__(self):
+        """Initialize collector."""
+        pass
+    
+    def collect(
+        self,
+        keywords: Optional[List[str]] = None,
+        topic: str = "SHRM Trial Verdict – Public & HR Community Reaction",
+    ) -> List[Dict[str, Any]]:
+        """
+        Collect Reddit posts for given keywords using RSS feeds.
+        
+        Args:
+            keywords: List of search keywords. Defaults to DEFAULT_SEARCH_TERMS
+            topic: Topic label for the sheet
+            
+        Returns:
+            List of normalized item dictionaries that pass validation
+        """
+        if keywords is None:
+            keywords = DEFAULT_SEARCH_TERMS
+        
+        logger.info("Reddit RSS Collector: Starting collection")
+        logger.info(f"Reddit RSS Collector: Using {len(keywords)} search keywords")
+        
+        all_items = []
+        seen_urls = set()  # Per-run deduplication
+        total_found = 0
+        total_validated = 0
+        relevance_filtered = 0
+        
+        for idx, keyword in enumerate(keywords, start=1):
+            logger.info(
+                f"Reddit RSS Collector: Processing query {idx}/{len(keywords)}: '{keyword}'"
+            )
+            
+            try:
+                # Construct RSS URL with query parameters
+                query_params = {
+                    "q": keyword,
+                    "sort": "new",
+                    "t": "week",  # Past week
+                }
+                
+                # Build URL
+                query_string = "&".join([f"{k}={quote(str(v))}" for k, v in query_params.items()])
+                rss_url = f"{REDDIT_RSS_BASE_URL}?{query_string}"
+                
+                # Fetch RSS feed with custom User-Agent
+                headers = {"User-Agent": REDDIT_USER_AGENT}
+                response = requests.get(rss_url, headers=headers, timeout=30)
+                
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Reddit RSS Collector: Query '{keyword}' failed with "
+                        f"{response.status_code}: {response.text[:200]}"
+                    )
+                    continue
+                
+                # Parse RSS feed
+                # feedparser can parse from URL or content
+                # We'll parse from the response content to ensure User-Agent is used
+                feed = feedparser.parse(response.content)
+                
+                entries = feed.get("entries", [])
+                raw_count = len(entries)
+                total_found += raw_count
+                
+                logger.info(
+                    f"Reddit RSS Collector: Query '{keyword}' returned {raw_count} entries"
+                )
+                
+                for entry in entries:
+                    try:
+                        normalized = self._normalize_entry(
+                            entry, topic, seen_urls
+                        )
+                        
+                        if normalized:
+                            # Validate by building and checking row
+                            row = build_row(normalized)
+                            if validate_row(row):
+                                all_items.append(normalized)
+                                total_validated += 1
+                                seen_urls.add(normalized.get("post_link", ""))
+                            else:
+                                logger.warning(
+                                    f"Reddit RSS Collector: Item failed validation: "
+                                    f"{normalized.get('post_link', 'unknown')}"
+                                )
+                        else:
+                            relevance_filtered += 1
+                    
+                    except Exception as e:
+                        logger.warning(
+                            f"Reddit RSS Collector: Error normalizing entry: {e}"
+                        )
+                        continue
+            
+            except Exception as e:
+                logger.error(
+                    f"Reddit RSS Collector: Error collecting for keyword '{keyword}': {e}",
+                    exc_info=True,
+                )
+                continue
+        
+        logger.info(
+            f"Reddit RSS Collector: Completed - {total_found} entries found, "
+            f"{relevance_filtered} filtered (empty/missing), "
+            f"{total_validated} passed validation, {len(all_items)} unique items collected"
+        )
+        
+        return all_items
+    
+    def _normalize_entry(
+        self,
+        entry: Dict[str, Any],
+        topic: str,
+        seen_urls: set,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Normalize an RSS entry to our schema.
+        
+        Args:
+            entry: Raw RSS entry from feedparser
+            topic: Topic label
+            seen_urls: Set of URLs already seen (for per-run dedupe)
+            
+        Returns:
+            Normalized item dictionary or None if invalid
+        """
+        try:
+            # Extract basic fields
+            link = entry.get("link", "")
+            if not link:
+                return None
+            
+            # Skip if already seen in this run
+            if link in seen_urls:
+                return None
+            
+            # Validate URL
+            if not is_valid_url(link):
+                logger.warning(f"Reddit RSS Collector: Invalid URL: {link}")
+                return None
+            
+            # Extract title and summary
+            title = entry.get("title", "").strip()
+            summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
+            summary = _strip_html(summary_raw)
+            
+            # Skip if title is empty
+            if not title:
+                logger.debug("Reddit RSS Collector: Skipping entry with empty title")
+                return None
+            
+            # Parse date
+            date_str = entry.get("updated") or entry.get("published") or entry.get("date")
+            if not date_str:
+                logger.warning(f"Reddit RSS Collector: Entry missing date: {link}")
+                return None
+            
+            parsed_date = _parse_rss_date(date_str)
+            if not parsed_date:
+                logger.warning(f"Reddit RSS Collector: Failed to parse date: {date_str}")
+                return None
+            
+            # Format date as MM/DD/YYYY
+            date_posted = format_date_mmddyyyy(parsed_date)
+            
+            # Extract author/profile
+            author_raw = entry.get("author", "") or entry.get("author_detail", {}).get("name", "")
+            profile_link = _extract_profile_link(author_raw)
+            profile_name = profile_link if profile_link != "N/A" else "N/A"
+            
+            # Build normalized item
+            item = {
+                "date_posted": date_posted,
+                "platform": "Reddit-RSS",
+                "profile": profile_name,
+                "profile_link": profile_link,
+                "followers": "N/A",
+                "post_link": link,
+                "topic": topic,
+                "title": title,
+                "summary": summary or title[:300],  # Fallback to title if no summary
+                "tone": "N/A",
+                "category": "",
+                "views": "N/A",
+                "likes": "N/A",
+                "comments": "N/A",
+                "shares": "N/A",
+                "eng_total": "N/A",
+                "sentiment_score": "N/A",
+                "verified": "N/A",
+                "notes": "",
+                # Preserve fields for topic filtering
+                "description": summary or title[:300],
+                "selftext": summary or "",
+            }
+            
+            # Apply platform defaults and validate
+            item = apply_platform_defaults(item)
+            is_valid, error_msg = validate_platform_item(item)
+            if not is_valid:
+                logger.warning(
+                    f"Reddit RSS Collector: Item failed platform validation: {error_msg}"
+                )
+                return None
+            
+            return item
+        
+        except Exception as e:
+            logger.error(f"Reddit RSS Collector: Error normalizing entry: {e}", exc_info=True)
+            return None
+
+
+# Backward compatibility: export a function that matches the old interface
 def collect_reddit_posts() -> List[Dict[str, Any]]:
     """
-    Collect Reddit posts for all search terms.
-
+    Collect Reddit posts using RSS feeds.
+    
+    This function maintains backward compatibility with the old snscrape-based interface.
+    
     Returns:
         List of normalized Reddit post dictionaries
     """
-    logger.info("Reddit Collector: Starting collection")
-    all_posts = []
-    seen_urls = set()  # Deduplicate within this collection run
-    query_count = 0
-    error_count = 0
-    total_raw = 0
-    json_parse_errors = 0
-
-    for query in REDDIT_SEARCH_TERMS:
-        query_count += 1
-        logger.info(
-            f"Reddit Collector: Processing query {query_count}/{len(REDDIT_SEARCH_TERMS)}: '{query}'"
-        )
-        try:
-            posts = run_snscrape_search(query, max_results=100)
-            raw_count = len(posts)
-            total_raw += raw_count
-            logger.info(
-                f"Reddit Collector: Query '{query}' returned {raw_count} raw posts"
-            )
-
-            normalized_count = 0
-            skipped_count = 0
-
-            for post_data in posts:
-                try:
-                    normalized = normalize_reddit_post(post_data)
-
-                    # Skip if URL is missing or already seen
-                    if not normalized.get("url"):
-                        skipped_count += 1
-                        continue
-
-                    if normalized["url"] in seen_urls:
-                        skipped_count += 1
-                        continue
-
-                    seen_urls.add(normalized["url"])
-                    all_posts.append(normalized)
-                    normalized_count += 1
-                except Exception as e:
-                    json_parse_errors += 1
-                    logger.warning(f"Reddit Collector: Error normalizing post: {e}")
-                    continue
-
-            if skipped_count > 0:
-                logger.info(
-                    f"Reddit Collector: Query '{query}': {normalized_count} normalized, {skipped_count} skipped (duplicates/missing URL)"
-                )
-            else:
-                logger.info(
-                    f"Reddit Collector: Query '{query}': {normalized_count} normalized"
-                )
-
-        except Exception as e:
-            error_count += 1
-            logger.error(
-                f"Reddit Collector: Error collecting posts for query '{query}': {e}",
-                exc_info=True,
-            )
-            continue
-
-    logger.info(
-        f"Reddit Collector: Completed - {len(all_posts)} unique posts collected from {query_count} queries, {total_raw} total raw posts, {json_parse_errors} parse errors, {error_count} query errors"
-    )
-    return all_posts
+    collector = RedditCollector()
+    return collector.collect()

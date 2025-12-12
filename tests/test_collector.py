@@ -52,8 +52,14 @@ class FakeSession:
 
 
 class TestCollectRedditPosts:
-    """Tests for collect_reddit_posts function."""
+    """Tests for collect_reddit_posts function.
     
+    NOTE: These tests are for the old snscrape-based collector.
+    The collector has been refactored to use RSS feeds.
+    See tests/test_reddit_collector.py for RSS-based tests.
+    """
+    
+    @pytest.mark.skip(reason="Old snscrape-based collector - see test_reddit_collector.py for RSS tests")
     def test_basic_normalization(self, mock_config, monkeypatch):
         """Test that Reddit posts are normalized correctly."""
         # Create fake Reddit post data
@@ -92,6 +98,7 @@ class TestCollectRedditPosts:
         assert post["username"] == "testuser"
         assert "date" in post
     
+    @pytest.mark.skip(reason="Old snscrape-based collector - see test_reddit_collector.py for RSS tests")
     def test_normalization_with_missing_fields(self, mock_config, monkeypatch):
         """Test normalization handles missing fields gracefully."""
         fake_post_data = {
@@ -117,6 +124,7 @@ class TestCollectRedditPosts:
         assert post.get("numComments", 0) == 0
         assert post.get("selftext", "") == ""
     
+    @pytest.mark.skip(reason="Old snscrape-based collector - see test_reddit_collector.py for RSS tests")
     def test_verdict_date_filtering(self, mock_config, monkeypatch):
         """Test that posts are filtered by verdict date."""
         verdict_date = parse_iso_date(VERDICT_DATE)
@@ -177,6 +185,7 @@ class TestCollectRedditPosts:
         # May be empty or have partial results from other queries
         # The function continues on errors for individual queries
     
+    @pytest.mark.skip(reason="Old snscrape-based collector - see test_reddit_collector.py for RSS tests")
     def test_error_handling_invalid_json(self, mock_config, monkeypatch):
         """Test that invalid JSON lines are skipped."""
         fake_stdout = "not valid json\n" + json.dumps({"url": "https://reddit.com/r/test/valid", "title": "Valid"}) + "\n"
@@ -192,6 +201,7 @@ class TestCollectRedditPosts:
         assert len(posts) > 0
         assert posts[0]["url"] == "https://reddit.com/r/test/valid"
     
+    @pytest.mark.skip(reason="Old snscrape-based collector - see test_reddit_collector.py for RSS tests")
     def test_deduplication_within_collection(self, mock_config, monkeypatch):
         """Test that duplicate URLs are deduplicated within a collection run."""
         fake_post1 = {

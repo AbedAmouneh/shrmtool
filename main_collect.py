@@ -36,6 +36,7 @@ from utils.time_utils import (
     parse_reddit_date,
     parse_newsapi_date,
     format_date_mmddyyyy,
+    EASTERN,
     is_after_verdict_date,
 )
 from utils.sentiment import classify_sentiment_combined
@@ -65,7 +66,7 @@ def _normalize_reddit_item(
     Normalize a Reddit post into the unified schema.
 
     Args:
-        post: Raw Reddit post dictionary from collector
+        post: Raw Reddit post dictionary from collector (or already normalized from RSS)
         topic: Topic label for the sheet
         verdict_date_override: Optional verdict date override
 
@@ -73,6 +74,30 @@ def _normalize_reddit_item(
         Normalized item dictionary or None if date parsing fails or URL is invalid
     """
     try:
+        # Check if item is already normalized from RSS collector
+        if post.get("platform") == "Reddit-RSS":
+            # Already normalized - just verify date filtering
+            date_posted_str = post.get("date_posted", "")
+            if not date_posted_str:
+                return None
+
+            # Parse the MM/DD/YYYY date back to datetime for filtering
+            try:
+                from datetime import datetime
+
+                parsed_date = datetime.strptime(date_posted_str, "%m/%d/%Y")
+                parsed_date = EASTERN.localize(parsed_date)
+
+                if not is_after_verdict_date(parsed_date, verdict_date_override):
+                    return None  # Skip posts before verdict date
+            except Exception as e:
+                logger.warning(f"Failed to parse date_posted for filtering: {e}")
+                return None
+
+            # Pass through already-normalized item
+            return post
+
+        # Legacy snscrape format - normalize it
         # Parse and format date
         if not post.get("date"):
             logger.warning(f"Reddit post missing date: {post.get('url')}")
@@ -526,7 +551,8 @@ def main_collect(
         logger.info(f"Reddit: Collected {reddit_stats['raw_collected']} raw posts")
 
         for post in reddit_posts:
-            url = post.get("url")
+            # Handle both old format (url) and new format (post_link)
+            url = post.get("url") or post.get("post_link")
             if not url:
                 continue
 
@@ -536,10 +562,13 @@ def main_collect(
                 reddit_stats["filtered_date"] += 1
                 continue
 
+            # Determine platform for dedupe processing
+            platform = normalized.get("platform", "Reddit")
+
             # Process with canonical URL dedupe
             if _process_item_with_dedupe(
                 normalized,
-                "Reddit",
+                platform,
                 reddit_stats,
                 all_items,
                 new_urls,

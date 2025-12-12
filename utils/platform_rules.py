@@ -38,6 +38,15 @@ PLATFORM_RULES: Dict[str, Dict[str, Any]] = {
         "requires_profile_link": False,
         "default_profile_link": "N/A",
     },
+    "Reddit-RSS": {
+        "requires_metrics": False,
+        "default_metrics": "N/A",
+        "allow_username_style_profile": True,
+        "requires_followers": False,
+        "default_followers": "N/A",
+        "requires_profile_link": False,
+        "default_profile_link": "N/A",
+    },
     "LinkedIn-Google": {
         "requires_metrics": False,
         "default_metrics": "N/A",
@@ -135,8 +144,8 @@ def apply_platform_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
 
     # Apply metric defaults if needed
     if not rules.get("requires_metrics", False):
-        # News and LinkedIn-Google platforms: all metrics should be "N/A"
-        if platform in ("News", "LinkedIn-Google"):
+        # News, LinkedIn-Google, and Reddit-RSS platforms: all metrics should be "N/A"
+        if platform in ("News", "LinkedIn-Google", "Reddit-RSS"):
             item["views"] = item.get("views") or "N/A"
             item["likes"] = item.get("likes") or "N/A"
             item["comments"] = item.get("comments") or "N/A"
