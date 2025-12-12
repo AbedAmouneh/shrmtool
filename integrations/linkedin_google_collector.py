@@ -79,6 +79,69 @@ def _clean_title(title: str) -> str:
     return cleaned.strip() or "N/A"
 
 
+def _is_verdict_relevant(item_data: Dict[str, Any]) -> bool:
+    """
+    Check if a LinkedIn post is relevant to the SHRM verdict.
+    
+    Filters out false positives by requiring verdict-specific keywords
+    and excluding known irrelevant content.
+    
+    Args:
+        item_data: Raw item from Google Custom Search API
+        
+    Returns:
+        True if relevant to verdict, False otherwise
+    """
+    # Required keywords: at least ONE must be present
+    required_keywords = [
+        "verdict",
+        "jury",
+        "11.5",
+        "liable",
+        "guilty",
+        "trial",
+        "damages",
+        "11 million",
+        "appeal",
+    ]
+    
+    # Excluded keywords: immediate disqualification
+    excluded_keywords = [
+        "Robby Starbuck",
+        "Starbuck",
+        "Sep 2025",
+        "Oct 2025",
+        "Aug 2025",
+        "inclusion conference",
+    ]
+    
+    # Combine title and snippet for checking
+    title = item_data.get("title", "").lower()
+    snippet = item_data.get("snippet", "").lower()
+    combined_text = f"{title} {snippet}"
+    
+    # Check excluded keywords first (immediate disqualification)
+    for excluded in excluded_keywords:
+        if excluded.lower() in combined_text:
+            logger.debug(
+                f"LinkedIn Google Collector: Excluded item due to keyword '{excluded}': "
+                f"{item_data.get('title', 'N/A')[:100]}"
+            )
+            return False
+    
+    # Check required keywords (at least one must be present)
+    has_required = any(keyword.lower() in combined_text for keyword in required_keywords)
+    
+    if not has_required:
+        logger.debug(
+            f"LinkedIn Google Collector: Excluded item missing verdict keywords: "
+            f"{item_data.get('title', 'N/A')[:100]}"
+        )
+        return False
+    
+    return True
+
+
 class LinkedInGoogleCollector:
     """Collector for LinkedIn posts via Google Custom Search API."""
     
@@ -112,7 +175,13 @@ class LinkedInGoogleCollector:
             return []
         
         if keywords is None:
-            keywords = ["SHRM verdict", "Johnny C. Taylor", "SHRM discrimination"]
+            # Refined search terms focused on verdict-specific content
+            keywords = [
+                "SHRM verdict",
+                "Johnny C. Taylor verdict",
+                "SHRM CEO verdict",
+                "SHRM discrimination",
+            ]
         
         logger.info("LinkedIn Google Collector: Starting collection")
         logger.info(f"LinkedIn Google Collector: Using {len(keywords)} search keywords")
@@ -121,6 +190,7 @@ class LinkedInGoogleCollector:
         seen_urls = set()  # Per-run deduplication
         total_found = 0
         total_validated = 0
+        relevance_filtered = 0  # Track items filtered by relevance
         
         # Get today's date in Eastern timezone, formatted as MM/DD/YYYY
         today_dt = datetime.now(EASTERN)
@@ -163,6 +233,11 @@ class LinkedInGoogleCollector:
                 for item_data in items:
                     total_found += 1
                     
+                    # Apply strict relevance filtering before normalization
+                    if not _is_verdict_relevant(item_data):
+                        relevance_filtered += 1
+                        continue
+                    
                     try:
                         normalized = self._normalize_item(
                             item_data, topic, date_posted, seen_urls
@@ -196,8 +271,15 @@ class LinkedInGoogleCollector:
         
         logger.info(
             f"LinkedIn Google Collector: Completed - {total_found} items found, "
+            f"{relevance_filtered} filtered by relevance, "
             f"{total_validated} passed validation, {len(all_items)} unique items collected"
         )
+        
+        if relevance_filtered > 0:
+            logger.info(
+                f"LinkedIn Google Collector: Skipped {relevance_filtered} items for missing "
+                f"verdict keywords or excluded content"
+            )
         
         return all_items
     

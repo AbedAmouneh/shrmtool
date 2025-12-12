@@ -11,6 +11,7 @@ from integrations.linkedin_google_collector import (
     LinkedInGoogleCollector,
     _clean_title,
     _extract_linkedin_profile,
+    _is_verdict_relevant,
 )
 from utils.time_utils import EASTERN
 
@@ -148,9 +149,9 @@ class TestLinkedInGoogleCollector:
     def test_title_cleaning_case_insensitive(self, monkeypatch):
         """Test that title cleaning is case-insensitive."""
         fake_item = {
-            "title": "SHRM Discussion | linkedin",
+            "title": "SHRM Verdict Discussion | linkedin",
             "link": "https://www.linkedin.com/posts/user-activity-123",
-            "snippet": "Test",
+            "snippet": "The verdict was announced",
         }
 
         fake_response = FakeResponse(200, {"items": [fake_item]})
@@ -160,7 +161,7 @@ class TestLinkedInGoogleCollector:
             results = collector.collect()
 
         assert len(results) == 1
-        assert results[0]["title"] == "SHRM Discussion"
+        assert results[0]["title"] == "SHRM Verdict Discussion"
 
     def test_title_without_linkedin_suffix(self, monkeypatch):
         """Test that titles without LinkedIn suffix are preserved."""
@@ -204,9 +205,9 @@ class TestLinkedInGoogleCollector:
                     {
                         "items": [
                             {
-                                "title": "Johnny C. Taylor | LinkedIn",
+                                "title": "Johnny C. Taylor Verdict | LinkedIn",
                                 "link": "https://www.linkedin.com/posts/user2-activity-2",
-                                "snippet": "Johnny snippet",
+                                "snippet": "Johnny C. Taylor verdict discussion",
                             }
                         ]
                     },
@@ -224,9 +225,9 @@ class TestLinkedInGoogleCollector:
     def test_per_run_deduplication(self, monkeypatch):
         """Test that duplicate URLs within a run are deduplicated."""
         fake_item = {
-            "title": "SHRM Post | LinkedIn",
+            "title": "SHRM Verdict Post | LinkedIn",
             "link": "https://www.linkedin.com/posts/user-activity-123",
-            "snippet": "Test",
+            "snippet": "The verdict was announced by the jury",
         }
 
         # Same item returned twice for same keyword
@@ -313,14 +314,14 @@ class TestLinkedInGoogleCollector:
             collector.collect()  # No keywords provided
 
         # Should have called with default keywords
-        assert call_count[0] == 3  # Default: ["SHRM verdict", "Johnny C. Taylor", "SHRM discrimination"]
+        assert call_count[0] == 4  # Default: ["SHRM verdict", "Johnny C. Taylor verdict", "SHRM CEO verdict", "SHRM discrimination"]
 
     def test_custom_topic(self, monkeypatch):
         """Test that custom topic is used."""
         fake_item = {
-            "title": "SHRM Post | LinkedIn",
+            "title": "SHRM Verdict Post | LinkedIn",
             "link": "https://www.linkedin.com/posts/user-activity-123",
-            "snippet": "Test",
+            "snippet": "The trial verdict was announced",
         }
 
         fake_response = FakeResponse(200, {"items": [fake_item]})
@@ -363,4 +364,127 @@ class TestHelperFunctions:
         """Test _extract_linkedin_profile handles empty input."""
         assert _extract_linkedin_profile("") == "N/A"
         assert _extract_linkedin_profile(None) == "N/A"
+
+    def test_is_verdict_relevant_with_verdict_keyword(self):
+        """Test that items with verdict keywords pass relevance check."""
+        item = {
+            "title": "SHRM Verdict Discussion",
+            "snippet": "The jury found SHRM liable for discrimination",
+        }
+        assert _is_verdict_relevant(item) is True
+
+    def test_is_verdict_relevant_with_trial_keyword(self):
+        """Test that items with trial keyword pass relevance check."""
+        item = {
+            "title": "SHRM Trial Update",
+            "snippet": "The trial continues",
+        }
+        assert _is_verdict_relevant(item) is True
+
+    def test_is_verdict_relevant_with_11_5_keyword(self):
+        """Test that items with 11.5 million keyword pass relevance check."""
+        item = {
+            "title": "SHRM Discrimination Case",
+            "snippet": "SHRM ordered to pay 11.5 million in damages",
+        }
+        assert _is_verdict_relevant(item) is True
+
+    def test_is_verdict_relevant_missing_keywords(self):
+        """Test that items without verdict keywords fail relevance check."""
+        item = {
+            "title": "SHRM General Discussion",
+            "snippet": "SHRM is a professional organization",
+        }
+        assert _is_verdict_relevant(item) is False
+
+    def test_is_verdict_relevant_excluded_robby_starbuck(self):
+        """Test that items mentioning Robby Starbuck are excluded."""
+        item = {
+            "title": "Robby Starbuck and SHRM",
+            "snippet": "Discussion about Robby Starbuck and SHRM discrimination",
+        }
+        assert _is_verdict_relevant(item) is False
+
+    def test_is_verdict_relevant_excluded_starbuck(self):
+        """Test that items mentioning Starbuck are excluded."""
+        item = {
+            "title": "SHRM and Starbuck Case",
+            "snippet": "The Starbuck case involves SHRM",
+        }
+        assert _is_verdict_relevant(item) is False
+
+    def test_is_verdict_relevant_excluded_old_dates(self):
+        """Test that items with old dates are excluded."""
+        item = {
+            "title": "SHRM Discussion",
+            "snippet": "SHRM discrimination case from Sep 2025",
+        }
+        assert _is_verdict_relevant(item) is False
+
+    def test_is_verdict_relevant_excluded_inclusion_conference(self):
+        """Test that items mentioning inclusion conference are excluded."""
+        item = {
+            "title": "SHRM Inclusion Conference",
+            "snippet": "SHRM inclusion conference discussion",
+        }
+        assert _is_verdict_relevant(item) is False
+
+    def test_is_verdict_relevant_case_insensitive(self):
+        """Test that relevance check is case-insensitive."""
+        item = {
+            "title": "SHRM VERDICT Discussion",
+            "snippet": "The VERDICT was announced",
+        }
+        assert _is_verdict_relevant(item) is True
+
+    def test_is_verdict_relevant_keyword_in_snippet_only(self):
+        """Test that keywords in snippet are detected."""
+        item = {
+            "title": "SHRM Discussion",
+            "snippet": "The jury found SHRM liable for 11.5 million in damages",
+        }
+        assert _is_verdict_relevant(item) is True
+
+    def test_relevance_filtering_in_collect(self, monkeypatch):
+        """Test that relevance filtering is applied during collection."""
+        # Item without verdict keywords - should be filtered
+        irrelevant_item = {
+            "title": "SHRM General Discussion | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user1-activity-1",
+            "snippet": "General discussion about SHRM",
+        }
+        
+        # Item with verdict keywords - should pass
+        relevant_item = {
+            "title": "SHRM Verdict Update | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user2-activity-2",
+            "snippet": "The jury found SHRM liable for discrimination",
+        }
+
+        fake_response = FakeResponse(200, {"items": [irrelevant_item, relevant_item]})
+
+        with patch("requests.get", return_value=fake_response):
+            collector = LinkedInGoogleCollector()
+            results = collector.collect()
+
+        # Only relevant item should be included
+        assert len(results) == 1
+        assert results[0]["post_link"] == "https://www.linkedin.com/posts/user2-activity-2"
+
+    def test_relevance_filtering_excludes_robby_starbuck(self, monkeypatch):
+        """Test that Robby Starbuck posts are filtered out."""
+        starbuck_item = {
+            "title": "Robby Starbuck SHRM Case | LinkedIn",
+            "link": "https://www.linkedin.com/posts/user-activity-1",
+            "snippet": "Discussion about Robby Starbuck and SHRM discrimination",
+        }
+
+        fake_response = FakeResponse(200, {"items": [starbuck_item]})
+
+        with patch("requests.get", return_value=fake_response):
+            collector = LinkedInGoogleCollector()
+            results = collector.collect()
+
+        # Should be filtered out
+        assert len(results) == 0
 
