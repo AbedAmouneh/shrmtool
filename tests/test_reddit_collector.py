@@ -97,10 +97,10 @@ class TestRedditCollector:
         assert item["title"] == "SHRM Verdict Discussion"
         assert "jury found SHRM liable" in item["summary"]  # HTML stripped
         assert item["profile_link"] == "https://www.reddit.com/user/testuser"
-        assert item["likes"] == "N/A"
-        assert item["comments"] == "N/A"
-        assert item["shares"] == "N/A"
-        assert item["eng_total"] == "N/A"
+        assert item["likes"] == "0"
+        assert item["comments"] == "0"
+        assert item["shares"] == "0"
+        assert item["eng_total"] == "0"
 
     def test_empty_response(self, monkeypatch):
         """Test that empty RSS feeds return empty list."""
@@ -171,11 +171,11 @@ class TestRedditCollector:
         assert len(results) == 1
 
     def test_missing_title_filtered(self, monkeypatch):
-        """Test that entries with empty titles are filtered out."""
+        """Test that entries with empty titles and no content are filtered out."""
         entry_no_title = FakeEntry(
             link="https://www.reddit.com/r/test/post1",
             title="",  # Empty title
-            summary="Test summary",
+            summary="",  # No summary either
             updated="2025-12-12T10:30:00+00:00",
         )
 

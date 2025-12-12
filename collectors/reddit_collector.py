@@ -194,6 +194,41 @@ def _extract_profile_link(author: str) -> str:
     
     return f"https://www.reddit.com/user/{author}"
 
+def _clean_reddit_title(title: str, entry: Dict[str, Any]) -> str:
+    """
+    Clean Reddit RSS title by removing navigational artifacts.
+    
+    Args:
+        title: Raw title from RSS feed
+        entry: Full RSS entry (for fallback extraction)
+        
+    Returns:
+        Cleaned title
+    """
+    if not title:
+        return "N/A"
+    
+    # Remove " | Reddit" or " - Reddit" suffixes (case-insensitive)
+    cleaned = re.sub(r"\s*[\|\-]\s*Reddit\s*$", "", title, flags=re.IGNORECASE)
+    
+    # Remove " : r/subreddit" or " - r/subreddit" patterns
+    cleaned = re.sub(r"\s*[:\-]\s*r/\w+\s*$", "", cleaned, flags=re.IGNORECASE)
+    
+    # If title starts with "r/", it's likely navigational - try to extract better title
+    if cleaned.strip().startswith("r/"):
+        # Try to get first sentence from summary/content as title
+        summary = entry.get("summary", "") or entry.get("description", "") or ""
+        if summary:
+            from html import unescape
+            clean_summary = re.sub(r"<[^>]+>", "", summary)
+            clean_summary = unescape(clean_summary)
+            clean_summary = clean_summary.strip()
+            # Get first 100 chars as potential title
+            if len(clean_summary) > 20:
+                cleaned = clean_summary[:100].split(".")[0].strip()
+    
+    return cleaned.strip() or "N/A"
+
 
 class RedditCollector:
     """Collector for Reddit posts via RSS feeds."""
@@ -344,14 +379,15 @@ class RedditCollector:
                 logger.warning(f"Reddit RSS Collector: Invalid URL: {link}")
                 return None
             
-            # Extract title
-            title = entry.get("title", "").strip()
+            # Extract and clean title
+            raw_title = entry.get("title", "").strip()
+            title = _clean_reddit_title(raw_title, entry)
             
             # Extract and clean summary (removes boilerplate, prefers content over summary)
             summary = _clean_reddit_summary(entry, title)
             
-            # Skip if title is empty
-            if not title:
+            # Skip if title is empty or N/A
+            if not title or title == "N/A":
                 logger.debug("Reddit RSS Collector: Skipping entry with empty title")
                 return None
             
@@ -387,11 +423,11 @@ class RedditCollector:
                 "summary": summary,  # Already cleaned and falls back to title if needed
                 "tone": "N/A",
                 "category": "",
-                "views": "N/A",
-                "likes": "N/A",
-                "comments": "N/A",
-                "shares": "N/A",
-                "eng_total": "N/A",
+                "views": "0",
+                "likes": "0",
+                "comments": "0",
+                "shares": "0",
+                "eng_total": "0",
                 "sentiment_score": "N/A",
                 "verified": "N/A",
                 "notes": "",

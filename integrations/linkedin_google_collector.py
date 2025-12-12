@@ -217,7 +217,7 @@ def _extract_linkedin_profile(link: str) -> str:
 
 def _clean_title(title: str) -> str:
     """
-    Clean LinkedIn title by removing " | LinkedIn" suffix.
+    Clean LinkedIn title by removing various LinkedIn suffixes.
     
     Args:
         title: Raw title from Google search
@@ -228,8 +228,12 @@ def _clean_title(title: str) -> str:
     if not title:
         return "N/A"
     
-    # Remove " | LinkedIn" suffix (case-insensitive)
+    # Remove various LinkedIn suffix patterns (case-insensitive)
     cleaned = re.sub(r"\s*\|\s*LinkedIn\s*$", "", title, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*-\s*LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*\.\.\.\ \s*\|\s*LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*\|\s*Post\s*\|\s*LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
+    
     return cleaned.strip() or "N/A"
 
 
@@ -492,7 +496,8 @@ class LinkedInGoogleCollector:
                 logger.warning(f"LinkedIn Google Collector: Invalid URL: {link}")
                 return None
             
-            title = _clean_title(item_data.get("title", ""))
+            # Clean title and use it as the Topic Title (actual post title)
+            post_title = _clean_title(item_data.get("title", ""))
             snippet = item_data.get("snippet", "") or ""
             profile_link = _extract_linkedin_profile(link)
             
@@ -503,16 +508,16 @@ class LinkedInGoogleCollector:
                 "profile_link": profile_link,
                 "followers": "N/A",
                 "post_link": link,
-                "topic": topic,
-                "title": title,
+                "topic": post_title,  # Use actual post title for Topic Title column
+                "title": post_title,  # Alias for compatibility
                 "summary": snippet,
                 "tone": "N/A",
-                "category": "",
-                "views": "N/A",
-                "likes": "N/A",
-                "comments": "N/A",
-                "shares": "N/A",
-                "eng_total": "N/A",
+                "category": topic,  # Move search topic to Category column
+                "views": "0",  # Default to 0 for numeric calculations
+                "likes": "0",
+                "comments": "0",
+                "shares": "0",
+                "eng_total": "0",
                 "sentiment_score": "N/A",
                 "verified": "N/A",
                 "notes": "",

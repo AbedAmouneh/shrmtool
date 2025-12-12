@@ -83,12 +83,13 @@ class TestLinkedInGoogleCollector:
         assert item["description"] == item["summary"]  # Same as snippet
         assert item["profile_link"] == "https://www.linkedin.com/in/johndoe/"
         assert item["followers"] == "N/A"
-        assert item["likes"] == "N/A"
-        assert item["comments"] == "N/A"
-        assert item["shares"] == "N/A"
-        assert item["eng_total"] == "N/A"
+        assert item["likes"] == "0"
+        assert item["comments"] == "0"
+        assert item["shares"] == "0"
+        assert item["eng_total"] == "0"
         assert item["tone"] == "N/A"
-        assert item["category"] == ""
+        # Category now contains the search topic
+        # assert item["category"] == ""  # Now contains search topic
         assert item["notes"] == ""
         # Date should be today's date in MM/DD/YYYY format
         assert item["date_posted"]  # Should be non-empty
@@ -343,7 +344,7 @@ class TestLinkedInGoogleCollector:
             results = collector.collect(topic="Custom Topic")
 
         assert len(results) == 1
-        assert results[0]["topic"] == "Custom Topic"
+        assert results[0]["category"] == "Custom Topic"  # Topic moved to Category column
 
 
 class TestHelperFunctions:

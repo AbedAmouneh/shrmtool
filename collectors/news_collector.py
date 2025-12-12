@@ -252,13 +252,26 @@ def collect_news_articles() -> List[Dict[str, Any]]:
                 try:
                     normalized = normalize_news_article(article_data)
 
-                    # Skip if URL is missing or already seen
+                    # Skip if URL is missing
                     if not normalized.get("url"):
                         skipped_count += 1
                         skipped_malformed += 1
                         logger.warning(f"News Collector: Article missing URL, skipping")
                         continue
+                    
+                    # Check for blocked domains
+                    try:
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(normalized["url"])
+                        domain = parsed_url.netloc.lower()
+                        if domain in [d.lower() for d in BLOCKED_DOMAINS]:
+                            skipped_count += 1
+                            logger.info(f"News Collector: Skipping blocked domain: {domain}")
+                            continue
+                    except Exception:
+                        pass  # If URL parsing fails, allow the article
 
+                    # Skip if already seen
                     if normalized["url"] in seen_urls:
                         skipped_count += 1
                         continue

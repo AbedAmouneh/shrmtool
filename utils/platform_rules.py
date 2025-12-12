@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional
 PLATFORM_RULES: Dict[str, Dict[str, Any]] = {
     "News": {
         "requires_metrics": False,
-        "default_metrics": "N/A",
+        "default_metrics": "0",
         "allow_username_style_profile": False,
         "requires_followers": False,
         "default_followers": "N/A",
@@ -40,7 +40,7 @@ PLATFORM_RULES: Dict[str, Dict[str, Any]] = {
     },
     "Reddit-RSS": {
         "requires_metrics": False,
-        "default_metrics": "N/A",
+        "default_metrics": "0",
         "allow_username_style_profile": True,
         "requires_followers": False,
         "default_followers": "N/A",
@@ -49,7 +49,7 @@ PLATFORM_RULES: Dict[str, Dict[str, Any]] = {
     },
     "LinkedIn-Google": {
         "requires_metrics": False,
-        "default_metrics": "N/A",
+        "default_metrics": "0",
         "allow_username_style_profile": False,
         "requires_followers": False,
         "default_followers": "N/A",
@@ -144,13 +144,13 @@ def apply_platform_defaults(item: Dict[str, Any]) -> Dict[str, Any]:
 
     # Apply metric defaults if needed
     if not rules.get("requires_metrics", False):
-        # News, LinkedIn-Google, and Reddit-RSS platforms: all metrics should be "N/A"
+        # News, LinkedIn-Google, and Reddit-RSS platforms: all metrics should default to "0"
         if platform in ("News", "LinkedIn-Google", "Reddit-RSS"):
-            item["views"] = item.get("views") or "N/A"
-            item["likes"] = item.get("likes") or "N/A"
-            item["comments"] = item.get("comments") or "N/A"
-            item["shares"] = item.get("shares") or "N/A"
-            item["eng_total"] = item.get("eng_total") or "N/A"
+            item["views"] = item.get("views") or "0"
+            item["likes"] = item.get("likes") or "0"
+            item["comments"] = item.get("comments") or "0"
+            item["shares"] = item.get("shares") or "0"
+            item["eng_total"] = item.get("eng_total") or "0"
 
     # Apply followers default
     if not item.get("followers"):
