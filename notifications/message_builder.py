@@ -24,6 +24,7 @@ def build_telegram_summary(
     total_new: int,
     news_count: int,
     twitter_count: int,
+    linkedin_count: int,
     repost_count: int,
     dedupe_count: int,
     offtopic_count: int,
@@ -37,6 +38,7 @@ def build_telegram_summary(
         total_new: Total rows appended to the sheet.
         news_count: Count of appended News rows.
         twitter_count: Count of appended X/Twitter rows.
+        linkedin_count: Count of appended LinkedIn-Google rows.
         repost_count: Count of reposts detected/tagged.
         dedupe_count: Count of duplicates removed.
         offtopic_count: Count of items discarded as off-topic/borderline.
@@ -54,6 +56,7 @@ def build_telegram_summary(
         f"<b>New items added to sheet:</b> {total_new} items",
         f"• News: {news_count}",
         f"• X/Twitter: {twitter_count}",
+        f"• LinkedIn: {linkedin_count}",
         f"• Reposts detected: {repost_count} (filtered)",
         f"• Duplicates removed: {dedupe_count}",
         f"• Off-topic discarded: {offtopic_count}",

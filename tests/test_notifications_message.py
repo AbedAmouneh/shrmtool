@@ -5,17 +5,19 @@ def test_build_telegram_summary_includes_all_counts():
     msg = build_telegram_summary(
         topic="SHRM Trial Verdict",
         search_terms=["SHRM verdict", "SHRM trial"],
-        total_new=4,
+        total_new=7,
         news_count=2,
         twitter_count=2,
+        linkedin_count=3,
         repost_count=1,
         dedupe_count=3,
         offtopic_count=5,
     )
 
-    assert "<b>New items added to sheet:</b> 4 items" in msg
+    assert "<b>New items added to sheet:</b> 7 items" in msg
     assert "News: 2" in msg
     assert "X/Twitter: 2" in msg
+    assert "LinkedIn: 3" in msg
     assert "Reposts detected: 1" in msg
     assert "Duplicates removed: 3" in msg
     assert "Off-topic discarded: 5" in msg
@@ -30,6 +32,7 @@ def test_build_telegram_summary_escapes_html():
         total_new=1,
         news_count=1,
         twitter_count=0,
+        linkedin_count=0,
         repost_count=0,
         dedupe_count=0,
         offtopic_count=0,

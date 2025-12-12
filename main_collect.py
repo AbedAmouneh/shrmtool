@@ -967,6 +967,7 @@ def main():
                     total_new=count,
                     news_count=summary.get("news_appended", 0),
                     twitter_count=summary.get("twitter_appended", 0),
+                    linkedin_count=summary.get("linkedin_appended", 0),
                     repost_count=summary.get("repost_appended", 0),
                     dedupe_count=summary.get("dedupe_filtered", 0),
                     offtopic_count=summary.get("offtopic_filtered", 0),
