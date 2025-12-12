@@ -252,6 +252,18 @@ def collect_news_articles() -> List[Dict[str, Any]]:
             skipped_count = 0
 
             for article_data in articles:
+                # Nuclear Option: Explicit source ban - check at the very top
+                source = article_data.get("source", {})
+                if isinstance(source, dict):
+                    source_name = source.get("name", "").lower()
+                else:
+                    source_name = str(source).lower() if source else ""
+                
+                if "biztoc" in source_name:
+                    skipped_count += 1
+                    logger.info(f"News Collector: Skipping banned source: {source_name}")
+                    continue
+                
                 try:
                     normalized = normalize_news_article(article_data)
 
