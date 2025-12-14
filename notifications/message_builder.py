@@ -25,9 +25,11 @@ def build_telegram_summary(
     news_count: int,
     twitter_count: int,
     linkedin_count: int,
-    repost_count: int,
-    dedupe_count: int,
-    offtopic_count: int,
+    reddit_count: int = 0,
+    blocked_count: int = 0,
+    date_filtered_count: int = 0,
+    dedupe_count: int = 0,
+    offtopic_count: int = 0,
 ) -> str:
     """
     Build a multi-line HTML-formatted summary for Telegram.
@@ -39,7 +41,9 @@ def build_telegram_summary(
         news_count: Count of appended News rows.
         twitter_count: Count of appended X/Twitter rows.
         linkedin_count: Count of appended LinkedIn-Google rows.
-        repost_count: Count of reposts detected/tagged.
+        reddit_count: Count of appended Reddit rows.
+        blocked_count: Count of items blocked (spam/blocked sources).
+        date_filtered_count: Count of items filtered by date (pre-Dec 2025).
         dedupe_count: Count of duplicates removed.
         offtopic_count: Count of items discarded as off-topic/borderline.
 
@@ -53,23 +57,30 @@ def build_telegram_summary(
     lines = [
         "📊 <b>SHRM Monitoring Pipeline — Daily Intake Alert</b>",
         "",
-        f"<b>New items added to sheet:</b> {total_new} items",
-        f"• News: {news_count}",
-        f"• X/Twitter: {twitter_count}",
-        f"• LinkedIn: {linkedin_count}",
-        f"• Reposts detected: {repost_count} (filtered)",
-        f"• Duplicates removed: {dedupe_count}",
-        f"• Off-topic discarded: {offtopic_count}",
+        f"<b>New items added to sheet:</b> {total_new}",
+        "",
+        "<b>Platform Breakdown:</b>",
+        f"• 📰 News: {news_count}",
+        f"• 👔 LinkedIn: {linkedin_count}",
+        f"• 🔴 Reddit: {reddit_count}",
+        f"• 🐦 X/Twitter: {twitter_count}",
+        "",
+        "<b>Quality Enforcement:</b>",
+        f"• 🛡️ Spam/Blocked: {blocked_count}",
+        f"• 📅 Date Filtered: {date_filtered_count} (Pre-Dec 2025)",
+        f"• ♻️ Duplicates Skipped: {dedupe_count}",
+        f"• 🚫 Off-topic Discarded: {offtopic_count}",
         "",
         "<b>Focus topics:</b>",
         f"{safe_topic} | SHRM Leadership (Johnny C. Taylor) | HR community response",
         "",
-        "<b>Automated checks passed:</b>",
-        "✔ URL canonicalization",
-        "✔ 17-column schema validation",
-        "✔ Metric normalization",
-        "✔ Verdict-date filter",
-        "✔ Topic classification (on-topic only)",
+        "<b>Automated Checks Passed:</b>",
+        "✔ URL Canonicalization (Aggressive)",
+        "✔ 17-Column Schema (Integer Metrics)",
+        "✔ Strict Date Guard (> Dec 1, 2025)",
+        "✔ Spam Domain Blocking (Biztoc)",
+        "✔ Title-Based Deduplication",
+        "✔ Topic Classification (on-topic only)",
         "",
         "<b>Search terms:</b>",
         safe_terms,

@@ -778,12 +778,19 @@ def main_collect(
         + twitter_stats["filtered_dedupe"]
         + linkedin_stats["filtered_dedupe"]
     )
+    date_filtered_total = (
+        reddit_stats["filtered_date"]
+        + news_stats["filtered_date"]
+        + twitter_stats["filtered_date"]
+        + linkedin_stats["filtered_date"]
+    )
     offtopic_filtered = (
         topic_classifications["borderline"] + topic_classifications["off_topic"]
     )
     news_appended_count = sum(1 for r in rows if r[1] == "News")
     twitter_appended_count = sum(1 for r in rows if r[1] in ("X", "Twitter"))
     linkedin_appended_count = sum(1 for r in rows if r[1] == "LinkedIn-Google")
+    reddit_appended_count = sum(1 for r in rows if r[1] == "Reddit")
     repost_appended_count = sum(1 for r in rows if str(r[8]).lower() == "repost")
 
     global LAST_RUN_SUMMARY
@@ -792,8 +799,10 @@ def main_collect(
         "news_appended": news_appended_count,
         "twitter_appended": twitter_appended_count,
         "linkedin_appended": linkedin_appended_count,
+        "reddit_appended": reddit_appended_count,
         "repost_appended": repost_appended_count,
         "dedupe_filtered": dedupe_filtered_total,
+        "date_filtered": date_filtered_total,
         "offtopic_filtered": offtopic_filtered,
         "topic_classifications": topic_classifications,
         "topic_classifications_by_platform": topic_classifications_by_platform,
@@ -1009,7 +1018,9 @@ def main():
                     news_count=summary.get("news_appended", 0),
                     twitter_count=summary.get("twitter_appended", 0),
                     linkedin_count=summary.get("linkedin_appended", 0),
-                    repost_count=summary.get("repost_appended", 0),
+                    reddit_count=summary.get("reddit_appended", 0),
+                    blocked_count=0,  # TODO: Track blocked sources separately if needed
+                    date_filtered_count=summary.get("date_filtered", 0),
                     dedupe_count=summary.get("dedupe_filtered", 0),
                     offtopic_count=summary.get("offtopic_filtered", 0),
                 )
