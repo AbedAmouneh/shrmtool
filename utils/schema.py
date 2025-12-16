@@ -74,6 +74,25 @@ def build_row(item: Dict[str, Any]) -> List[Any]:
     - verified: "Y" or "N" or "N/A"
     - notes: notes string (can be empty, defaults to "")
     """
+    # Get metric values, defaulting to "0" instead of "N/A" for integer compliance
+    views = item.get("views", "0")
+    likes = item.get("likes", "0")
+    comments = item.get("comments", "0")
+    shares = item.get("shares", "0")
+    eng_total = item.get("eng_total", "0")
+
+    # Convert "N/A" to "0" for metric columns
+    if views == "N/A":
+        views = "0"
+    if likes == "N/A":
+        likes = "0"
+    if comments == "N/A":
+        comments = "0"
+    if shares == "N/A":
+        shares = "0"
+    if eng_total == "N/A":
+        eng_total = "0"
+
     return [
         item.get("date_posted", ""),           # 1 Date Posted
         item.get("platform", ""),              # 2 Platform
@@ -84,11 +103,11 @@ def build_row(item: Dict[str, Any]) -> List[Any]:
         item.get("summary", ""),               # 7 Summary
         item.get("tone", "N/A"),               # 8 Tone
         item.get("category", ""),              # 9 Category
-        item.get("views", "N/A"),              # 10 Views
-        item.get("likes", "N/A"),              # 11 Likes
-        item.get("comments", "N/A"),           # 12 Comments
-        item.get("shares", "N/A"),             # 13 Shares
-        item.get("eng_total", "N/A"),          # 14 Eng. Total
+        views,                                  # 10 Views
+        likes,                                  # 11 Likes
+        comments,                               # 12 Comments
+        shares,                                 # 13 Shares
+        eng_total,                              # 14 Eng. Total
         item.get("sentiment_score", "N/A"),    # 15 Sentiment Score
         item.get("verified", "N/A"),           # 16 Verified (Y/N)
         item.get("notes", ""),                 # 17 Notes
@@ -108,6 +127,7 @@ def validate_row(row: Sequence[Any]) -> bool:
     Validation rules:
     - Must have exactly 17 columns
     - Required fields (Date Posted, Platform, Post Link, Topic title) must be non-empty
+    - Metric columns (Views, Likes, Comments, Shares, Eng. Total) must be numeric or "0", not "N/A"
     - Logs errors for validation failures
 
     Note: This function logs errors but does not raise exceptions.
@@ -140,6 +160,38 @@ def validate_row(row: Sequence[Any]) -> bool:
     if missing_fields:
         logger.error(
             f"Row validation failed: missing required fields: {missing_fields}. "
+            f"Row preview: {row[:3]}..."
+        )
+        return False
+
+    # Validate metric columns (Views=9, Likes=10, Comments=11, Shares=12, Eng. Total=13)
+    metric_columns = {
+        9: "Views",
+        10: "Likes",
+        11: "Comments",
+        12: "Shares",
+        13: "Eng. Total",
+    }
+
+    invalid_metrics = []
+    for col_idx, col_name in metric_columns.items():
+        if len(row) > col_idx:
+            value = str(row[col_idx]).strip().upper()
+            # Reject "N/A", "NONE", "NULL" in metric columns
+            if value in ("N/A", "NONE", "NULL"):
+                invalid_metrics.append(f"{col_name}='{value}'")
+            # Allow empty, "0", or numeric values
+            elif value and value != "0":
+                try:
+                    float(value.replace(",", ""))
+                except ValueError:
+                    # Not numeric - might be narrative text (will be caught by alignment analyzer)
+                    pass
+
+    if invalid_metrics:
+        logger.error(
+            f"Row validation failed: invalid metric values: {', '.join(invalid_metrics)}. "
+            f"Metric columns must be numeric or '0', not 'N/A'. "
             f"Row preview: {row[:3]}..."
         )
         return False

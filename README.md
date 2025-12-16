@@ -1,6 +1,6 @@
 # SHRM Content Collector
 
-Automated collection tool for monitoring SHRM discrimination trial-related content from Reddit and news sources. Collects post-verdict content, deduplicates by URL, and appends standardized rows to a Google Sheet.
+Automated collection tool for monitoring SHRM discrimination trial-related content from Reddit, news sources, LinkedIn, and X/Twitter. Features a rolling 2-day window, aggressive deduplication, spam domain blocking, and strict numeric cleaning. Appends standardized rows to a Google Sheet.
 
 ## Architecture Overview
 
@@ -175,6 +175,24 @@ Both collectors' normalized items go through:
 
 ## Running
 
+### Quick Start: Fresh Collection
+
+Use the `fresh_start.sh` script to clear deduplication memory and perform a fresh collection:
+
+```bash
+./fresh_start.sh
+```
+
+This script automatically:
+1. Backs up `seen_urls.db` → `seen_urls_OLD.db` (clears bot memory)
+2. Runs `python main_collect.py` with venv Python
+3. Displays verification reminders
+
+**When to use:**
+- First run of the day
+- After major changes to collectors
+- When you want to re-fetch all content from the rolling window
+
 ### Basic Usage
 
 Activate your virtual environment and run:
@@ -208,9 +226,17 @@ python -m main_collect \
 
 - `--terms` (optional): Comma-separated list of search terms. If not provided, uses collector defaults. Recommended terms listed above.
 - `--topic` (optional): Topic label for the 'Topic' column in the sheet. Default: "SHRM Trial Verdict – Public & HR Community Reaction"
-- `--since` (optional): Override verdict date filter (YYYY-MM-DD format)
+- `--since` (optional): Override verdict date filter (YYYY-MM-DD format). If not provided, uses a **rolling 2-day window** (current date - 2 days)
 - `--dry-run` (flag): Run without writing to Google Sheets or updating dedupe store
 - `--max-results` (optional): Maximum number of items to process
+
+**Rolling 2-Day Window:**
+
+By default, the pipeline uses a rolling 2-day window for date filtering:
+- **Dec 15 run**: Fetches content from Dec 13-15
+- **Dec 16 run**: Fetches content from Dec 14-16 (deduplication skips already-seen Dec 14-15 items)
+
+This ensures fresh daily content without manual date adjustments, while the deduplication database prevents re-adding existing items.
 
 **Example Output:**
 
@@ -239,11 +265,11 @@ The Google Sheet uses a standardized 17-column schema. Here's how each column is
 | **Topic**           | String              | Topic label                                  | CLI argument                             | CLI argument           |
 | **title**           | String              | Post/article title                           | `title`                                  | `title`                |
 | **Tone**            | String              | Sentiment classification                     | `"N/A"`                                  | `"N/A"`                |
-| **Views**           | String              | View count                                   | `"N/A"`                                  | `"N/A"`                |
-| **Likes**           | String              | Like/upvote count                            | `score`                                  | `"N/A"`                |
-| **Comments**        | String              | Comment count                                | `numComments`                            | `"N/A"`                |
-| **Shares**          | String              | Share/retweet count                          | `"0"`                                    | `"N/A"`                |
-| **Eng. Total**      | String              | Total engagement (likes + comments + shares) | Calculated sum                           | `"N/A"`                |
+| **Views**           | String (Integer)    | View count                                   | `"0"` (Reddit doesn't provide views)     | `"0"`                  |
+| **Likes**           | String (Integer)    | Like/upvote count                            | `score` (parsed to integer)              | `"0"`                  |
+| **Comments**        | String (Integer)    | Comment count                                | `numComments` (parsed to integer)        | `"0"`                  |
+| **Shares**          | String (Integer)    | Share/retweet count                          | `"0"` (Reddit doesn't have shares)       | `"0"`                  |
+| **Eng. Total**      | String (Integer)    | Total engagement (likes + comments + shares) | Calculated sum (integer)                 | `"0"`                  |
 | **Post Summary**    | String              | Summary text (truncated to ~300 chars)       | `selftext` or `title`                    | `description` + `(Source: {source} – by {author})` |
 | **SHRM Like**       | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
 | **SHRM Comment**    | String              | Manual input field                           | `""` (blank)                             | `""` (blank)           |
@@ -252,9 +278,26 @@ The Google Sheet uses a standardized 17-column schema. Here's how each column is
 
 1. Date Posted, 2. Platform, 3. Profile Link, 4. N° of Followers, 5. Post Link, 6. Topic title, 7. Summary, 8. Tone, 9. Category, 10. Views, 11. Likes, 12. Comments, 13. Shares, 14. Eng. Total, 15. Sentiment Score, 16. Verified (Y/N), 17. Notes
 
+**Metric Column Standards (Columns 10-14):**
+- All metric columns (Views, Likes, Comments, Shares, Eng. Total) contain **only integer strings**
+- Invalid values ("N/A", None, empty, text) are automatically converted to "0"
+- This ensures Google Sheets can treat these columns as numbers for sorting, filtering, and calculations
+
 ## Data Quality & Schema Guarantees
 
 The pipeline implements strict data quality controls to ensure all rows written to the Google Sheet are clean, correctly mapped, and properly deduplicated.
+
+### Quality Enforcement Features
+
+The "Polished Pipeline" includes these hardened quality checks:
+
+1. **Aggressive URL Canonicalization**: Strips ALL query parameters from news URLs to prevent duplicate articles with tracking variants
+2. **Title-Based Deduplication**: Secondary check within each run to catch duplicate articles with identical normalized titles
+3. **Spam Domain Blocking**: Hard-blocks Biztoc.com and other spam aggregators at the source name level
+4. **Strict Integer Metrics**: All metric columns (Views, Likes, Comments, Shares, Eng. Total) contain only "0" or positive integers (no "N/A" or text)
+5. **Rolling 2-Day Window**: Automatically fetches content from the last 2 days without manual date adjustments
+6. **17-Column Schema Enforcement**: All rows validated before appending
+7. **Persistent Deduplication**: SQLite database with absolute paths for cross-environment consistency
 
 ### Schema Validation
 
@@ -263,14 +306,19 @@ The pipeline implements strict data quality controls to ensure all rows written 
 - **Fail-fast behavior**: Invalid rows are logged and skipped (not appended to the sheet)
 - **Automatic defaults**: Missing non-metric values are filled with safe defaults ("N/A" or empty string)
 
-### Metric Normalization & Eng. Total
+### Metric Normalization & Strict Numeric Cleaning
 
+- **Strict numeric enforcement**: All metric columns (Views, Likes, Comments, Shares, Eng. Total) contain **only integer strings** or "0"
+  - "N/A", None, empty strings, and text values (e.g., "SHRM Verdict") are converted to "0"
+  - Comma-separated numbers (e.g., "1,234") are parsed to integers
+  - Applied at normalization time and again before row conversion (double-check safety layer)
 - **K/M number parsing**: Follower counts and metrics in "64.5K" or "1.2M" format are parsed to integers
 - **Consistent Eng. Total calculation**: `Eng. Total = Likes + Comments + Shares` (computed when all three are numeric)
 - **Platform-specific defaults**:
-  - **News**: All metrics (Views, Likes, Comments, Shares, Eng. Total) are set to "N/A"
+  - **News**: All metrics (Views, Likes, Comments, Shares, Eng. Total) are set to "0"
   - **X/Reddit**: Metrics are normalized to integers; Eng. Total is computed from the sum
-- **No blank metrics**: Metrics are never blank; they are either numeric strings or "N/A"
+  - **LinkedIn**: Metrics are normalized to integers when available; Eng. Total is computed from the sum
+- **No blank or invalid metrics**: Metrics are never blank or contain text; they are always numeric strings (integers)
 
 ### Topic & Date Filtering
 
@@ -284,11 +332,17 @@ The pipeline implements strict data quality controls to ensure all rows written 
 
 ### Deduplication & Repost Tagging
 
-- **Canonical URL normalization**: URLs are normalized by:
+- **Aggressive canonical URL normalization**: URLs are normalized by:
   - Converting http → https
-  - Stripping tracking parameters (utm\_\*, fbclid, gclid, etc.)
+  - **Stripping ALL query parameters for news domains** (e.g., `site.com/story?ref=123` → `site.com/story`)
+  - Preserving query parameters for social media/video domains (YouTube, Twitter, etc.)
   - Removing fragments (#...)
   - Lowercasing hostname
+  - Handling trailing slashes consistently
+- **Title-based deduplication (News)**: Secondary check within each run's batch to catch articles with identical titles
+- **Spam domain blocking**: Explicit source name blocking for known spam aggregators:
+  - **Biztoc.com**: Hard-blocked at the source name level (case-insensitive)
+  - Blocked sources are logged and counted separately
 - **News deduplication**: If a News article's canonical URL has already been seen (any source), it is skipped entirely
 - **Social platform repost detection**:
   - **Strict duplicate**: Same canonical URL + same profile → skipped
@@ -296,25 +350,32 @@ The pipeline implements strict data quality controls to ensure all rows written 
     - `Category` field set to "Repost"
     - `Notes` field contains: "Repost of canonical URL: {canonical_url}"
 - **URL validation**: Malformed or invalid URLs are rejected before processing
+- **Persistent storage**: Deduplication database (`seen_urls.db`) uses absolute paths to work correctly in both local and CI environments
 
 ### Per-Platform Mapping Rules
 
 Each platform has specific rules enforced during normalization:
 
 - **News**:
-  - Metrics (Views, Likes, Comments, Shares, Eng. Total): Always "N/A"
+  - Metrics (Views, Likes, Comments, Shares, Eng. Total): Always **"0"** (integers)
   - Followers: Always "N/A"
-  - Profile (col 3): News source name (e.g., "Business Insider", "Reuters") from `source.name`, or URL domain (e.g., "biztoc.com") if source is missing
+  - Profile (col 3): News source name (e.g., "Business Insider", "Reuters") from `source.name`, or URL domain (e.g., "businessinsider.com") if source is missing
   - Profile Link: "N/A" (no profile URLs for news sources)
   - Post Summary: Description text with source attribution suffix: `"(Source: {source} – by {author})"` when both are available, or `"(Source: {source})"` when only source is available
+  - Spam blocking: Biztoc.com sources are explicitly blocked
 - **X (Twitter)**:
   - Metrics: Must be numeric (parsed from API responses)
   - Followers: Numeric if available, "N/A" if not
   - Profile Link: `https://x.com/{username}` format
 - **Reddit**:
-  - Metrics: Numeric (score → likes, numComments → comments)
+  - Metrics: Numeric (score → likes, numComments → comments, shares always 0)
+  - Views: Always **"0"** (Reddit doesn't provide view counts)
   - Followers: "N/A" (Reddit doesn't expose follower counts)
   - Profile Link: `https://www.reddit.com/user/{username}` format
+- **LinkedIn**:
+  - Metrics: Numeric when available from post metadata
+  - Collected via Google Custom Search API
+  - Date filtering includes both extracted dates and marker-based old content detection
 
 ### Troubleshooting Data Issues
 
@@ -514,13 +575,47 @@ The pipeline can send detailed daily intake summaries via Telegram when new item
 - **GitHub Actions**: The workflow writes `SERVICE_ACCOUNT_JSON` secret to `service_account.json` automatically
 - The code supports both methods: checks `SERVICE_ACCOUNT_JSON` env var first, then falls back to file
 
+## Maintenance Scripts
+
+### Fresh Start Script
+
+`fresh_start.sh` - Automated workflow to clear deduplication memory and perform a fresh collection:
+
+```bash
+./fresh_start.sh
+```
+
+**What it does:**
+1. Backs up `seen_urls.db` to `seen_urls_OLD.db`
+2. Runs `./venv/bin/python main_collect.py`
+3. Displays completion message with verification reminders
+
+**When to use:**
+- Daily fresh runs
+- After collector logic changes
+- When you need to re-fetch content from the rolling window
+- To clear duplicate detection memory
+
+### Data Cleanup Scripts
+
+Located in `scripts/` directory:
+
+- **`purge_spam_domains.py`**: Removes spam/blocked domains from the Google Sheet
+- **`fix_existing_metrics.py`**: Converts "N/A" to "0" in metric columns for existing rows
+- **`deduplicate_sheet.py`**: Removes duplicate links from the Google Sheet based on audit reports
+- **`analyze_column_alignment.py`**: Detects schema misalignment issues
+
+All cleanup scripts support `--dry-run` mode for safe testing.
+
 ## Project Structure
 
 ```
 shrmtool/
-├── collectors/          # Reddit and news collectors
+├── collectors/          # Reddit, news, X, and LinkedIn collectors
 │   ├── reddit_collector.py
-│   └── news_collector.py
+│   ├── news_collector.py
+│   ├── x_collector.py
+│   └── linkedin_google_collector.py
 ├── integrations/        # Google Sheets and deduplication
 │   ├── google_sheets.py
 │   └── dedupe_store.py
@@ -536,6 +631,11 @@ shrmtool/
 ├── notifications/      # Notification services
 │   ├── telegram_notifier.py
 │   └── message_builder.py
+├── scripts/            # Data cleanup and maintenance scripts
+│   ├── purge_spam_domains.py
+│   ├── fix_existing_metrics.py
+│   ├── deduplicate_sheet.py
+│   └── analyze_column_alignment.py
 ├── tests/              # Test suite
 │   ├── conftest.py
 │   ├── test_*.py
@@ -544,7 +644,9 @@ shrmtool/
 │   └── workflows/
 │       └── collector.yml  # GitHub Actions workflow
 ├── main_collect.py     # Main orchestrator
+├── fresh_start.sh      # Fresh collection workflow script
 ├── requirements.txt    # Python dependencies
+├── seen_urls.db        # SQLite deduplication database
 ├── .env               # Environment variables (not committed)
 └── service_account.json # Google service account (not committed)
 ```

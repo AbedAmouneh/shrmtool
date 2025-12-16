@@ -130,3 +130,195 @@ def append_rows(rows: List[List[Any]]) -> None:
     except Exception as e:
         # Non-API errors: wrap in RuntimeError so callers get a clear, consistent error
         raise RuntimeError(f"Failed to append rows to Google Sheet: {e}") from e
+
+
+def get_sheet() -> gspread.Spreadsheet:
+    """
+    Get the Google Sheet by ID.
+
+    Returns:
+        The gspread Spreadsheet object
+
+    Raises:
+        gspread.exceptions.APIError: If sheet access fails or sheet not found
+        RuntimeError: For non-API errors
+    """
+    try:
+        client = get_sheets_client()
+        return client.open_by_key(SHEET_ID)
+    except gspread.exceptions.APIError as e:
+        msg = str(e)
+        if "PERMISSION_DENIED" in msg or "403" in msg:
+            raise gspread.exceptions.APIError(
+                _SimpleResponse(
+                    f"Permission denied. Ensure the service account email has "
+                    f"Editor access to the sheet. Error: {e}"
+                )
+            )
+        if "NOT_FOUND" in msg or "404" in msg:
+            raise gspread.exceptions.APIError(
+                _SimpleResponse(
+                    f"Sheet not found. Check that SHEET_ID is correct. Error: {e}"
+                )
+            )
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Failed to get Google Sheet: {e}") from e
+
+
+def get_worksheet_by_name(sheet_name: str) -> gspread.Worksheet:
+    """
+    Get a worksheet by name from the Google Sheet.
+
+    Args:
+        sheet_name: Name of the worksheet to retrieve
+
+    Returns:
+        The gspread Worksheet object
+
+    Raises:
+        gspread.exceptions.WorksheetNotFound: If worksheet doesn't exist
+        RuntimeError: For other errors
+    """
+    try:
+        sheet = get_sheet()
+        return sheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Failed to get worksheet '{sheet_name}': {e}") from e
+
+
+def get_all_rows(worksheet: gspread.Worksheet, include_header: bool = False) -> List[List[Any]]:
+    """
+    Get all rows from a worksheet.
+
+    Args:
+        worksheet: The gspread Worksheet object
+        include_header: If True, includes the first row (header). Default: False
+
+    Returns:
+        List of all rows (each row is a list of values)
+
+    Raises:
+        RuntimeError: For errors reading the worksheet
+    """
+    try:
+        all_values = worksheet.get_all_values()
+        if not include_header and all_values:
+            return all_values[1:]  # Skip header row
+        return all_values
+    except Exception as e:
+        raise RuntimeError(f"Failed to get rows from worksheet: {e}") from e
+
+
+def delete_rows(worksheet: gspread.Worksheet, row_numbers: List[int]) -> None:
+    """
+    Delete specific rows from a worksheet by row number.
+
+    Note: Row numbers are 1-indexed (first data row is 2, since row 1 is header).
+    This function deletes rows in reverse order to avoid index shifting issues.
+    Uses batch deletion with rate limiting to avoid API quota issues.
+    Filters out invalid row numbers that don't exist in the sheet.
+
+    Args:
+        worksheet: The gspread Worksheet object
+        row_numbers: List of row numbers to delete (1-indexed, where 1 is header)
+
+    Raises:
+        RuntimeError: For errors deleting rows
+    """
+    if not row_numbers:
+        return
+
+    try:
+        import time
+        
+        # Get current row count to filter out invalid row numbers
+        row_count = worksheet.row_count
+        
+        # Filter out rows that don't exist (row numbers > row_count)
+        valid_rows = [r for r in row_numbers if 1 <= r <= row_count]
+        
+        if not valid_rows:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"All {len(row_numbers)} row numbers are invalid (sheet has {row_count} rows)")
+            return
+        
+        if len(valid_rows) < len(row_numbers):
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Filtered out {len(row_numbers) - len(valid_rows)} invalid row numbers (sheet has {row_count} rows)")
+        
+        # Sort in descending order to delete from bottom to top (avoids index shifting)
+        sorted_rows = sorted(set(valid_rows), reverse=True)
+
+        # Batch deletions to avoid rate limits (delete 20 at a time with 3 second delay)
+        batch_size = 20
+        for i in range(0, len(sorted_rows), batch_size):
+            batch = sorted_rows[i : i + batch_size]
+            
+            # Delete batch (gspread's delete_rows can handle multiple rows if they're consecutive)
+            # For non-consecutive rows, we delete one at a time but in batches
+            for row_num in batch:
+                worksheet.delete_rows(row_num)
+            
+            # Add delay between batches to avoid rate limits (except for last batch)
+            if i + batch_size < len(sorted_rows):
+                time.sleep(3)  # 3 second delay between batches
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to delete rows {row_numbers}: {e}") from e
+
+
+def update_row(worksheet: gspread.Worksheet, row_number: int, values: List[Any]) -> None:
+    """
+    Update a single row in the worksheet.
+
+    Args:
+        worksheet: The gspread Worksheet object
+        row_number: Row number to update (1-indexed, where 1 is header)
+        values: List of values to write to the row
+
+    Raises:
+        RuntimeError: For errors updating the row
+    """
+    try:
+        worksheet.update(f"A{row_number}", [values])
+    except Exception as e:
+        raise RuntimeError(f"Failed to update row {row_number}: {e}") from e
+
+
+def batch_update_rows(
+    worksheet: gspread.Worksheet, updates: List[tuple[int, List[Any]]]
+) -> None:
+    """
+    Batch update multiple rows in the worksheet.
+
+    Args:
+        worksheet: The gspread Worksheet object
+        updates: List of (row_number, values) tuples to update
+
+    Raises:
+        RuntimeError: For errors updating rows
+    """
+    if not updates:
+        return
+
+    try:
+        # Prepare batch update data
+        data = []
+        for row_number, values in updates:
+            # Convert row number to A1 notation range
+            range_name = f"A{row_number}:Q{row_number}"  # Q is column 17
+            data.append({"range": range_name, "values": [values]})
+
+        # Perform batch update (max 100 updates per batch)
+        batch_size = 100
+        for i in range(0, len(data), batch_size):
+            batch = data[i : i + batch_size]
+            worksheet.batch_update(batch)
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to batch update rows: {e}") from e

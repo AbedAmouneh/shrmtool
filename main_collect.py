@@ -8,7 +8,7 @@ deduplicates, and appends to Google Sheet.
 import logging
 import sys
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import collectors
 from collectors.reddit_collector import collect_reddit_posts
@@ -59,6 +59,46 @@ logger = logging.getLogger(__name__)
 LAST_RUN_SUMMARY: Optional[Dict[str, Any]] = None
 
 
+def _clean_numeric_column(value: Any) -> str:
+    """
+    Strict numeric column cleaner for Views, Likes, Comments, Shares, Eng. Total.
+    
+    Converts any non-numeric value (including "N/A", None, empty, or text strings) to "0".
+    If the value is numeric, returns it as a string integer.
+    
+    Args:
+        value: Any value from a metric column
+        
+    Returns:
+        String representation of an integer (or "0" if invalid)
+    """
+    if value is None or value == "":
+        return "0"
+    
+    # If it's already a string, try to parse it
+    if isinstance(value, str):
+        # Handle "N/A", "None", "NULL", etc.
+        normalized = value.strip().upper()
+        if normalized in ("N/A", "NONE", "NULL", ""):
+            return "0"
+        
+        # Try to parse as number
+        try:
+            # Remove any commas (e.g., "1,234" -> "1234")
+            cleaned = value.replace(",", "").strip()
+            num = float(cleaned)
+            return str(int(num))
+        except (ValueError, AttributeError):
+            # Not a valid number - could be text like "SHRM Verdict"
+            return "0"
+    
+    # If it's a number type (int or float), convert directly
+    try:
+        return str(int(value))
+    except (ValueError, TypeError):
+        return "0"
+
+
 def _normalize_reddit_item(
     post: Dict[str, Any], topic: str, verdict_date_override: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
@@ -83,8 +123,6 @@ def _normalize_reddit_item(
 
             # Parse the MM/DD/YYYY date back to datetime for filtering
             try:
-                from datetime import datetime
-
                 parsed_date = datetime.strptime(date_posted_str, "%m/%d/%Y")
                 parsed_date = EASTERN.localize(parsed_date)
 
@@ -131,7 +169,7 @@ def _normalize_reddit_item(
 
         # Compute engagement total
         eng_total_val = compute_eng_total(likes_val, comments_val, shares_val)
-        eng_total = str(eng_total_val) if eng_total_val is not None else "N/A"
+        eng_total = str(eng_total_val) if eng_total_val is not None else "0"
 
         # Build profile
         if username:
@@ -158,11 +196,11 @@ def _normalize_reddit_item(
             "summary": summary,
             "tone": "N/A",
             "category": "",
-            "views": "N/A",
-            "likes": str(likes_val),
-            "comments": str(comments_val),
-            "shares": str(shares_val),
-            "eng_total": eng_total,
+            "views": _clean_numeric_column("0"),
+            "likes": _clean_numeric_column(likes_val),
+            "comments": _clean_numeric_column(comments_val),
+            "shares": _clean_numeric_column(shares_val),
+            "eng_total": _clean_numeric_column(eng_total_val),
             "sentiment_score": "N/A",
             "verified": "N/A",
             "notes": "",
@@ -259,11 +297,11 @@ def _normalize_news_item(
             "summary": post_summary,
             "tone": "N/A",
             "category": "",
-            "views": "N/A",
-            "likes": "N/A",
-            "comments": "N/A",
-            "shares": "N/A",
-            "eng_total": "N/A",
+            "views": _clean_numeric_column("0"),
+            "likes": _clean_numeric_column("0"),
+            "comments": _clean_numeric_column("0"),
+            "shares": _clean_numeric_column("0"),
+            "eng_total": _clean_numeric_column("0"),
             "sentiment_score": "N/A",
             "verified": "N/A",
             "notes": "",
@@ -494,12 +532,18 @@ def main_collect(
     Returns:
         The number of rows successfully appended to Google Sheets (or would be appended in dry-run).
     """
-    verdict_date = verdict_date_override if verdict_date_override else VERDICT_DATE
+    # Rolling 2-day window: always fetch content from 2 days ago to now
+    if verdict_date_override:
+        verdict_date = verdict_date_override
+    else:
+        cutoff_date = datetime.now() - timedelta(days=2)
+        verdict_date = cutoff_date.strftime("%Y-%m-%d")
+    
     logger.info("=" * 60)
     logger.info("Starting SHRM content collection pipeline")
     logger.info(f"Search terms: {search_terms}")
     logger.info(f"Topic: {topic}")
-    logger.info(f"Verdict date filter: {verdict_date}")
+    logger.info(f"Verdict date filter (rolling 2-day window): {verdict_date}")
     if dry_run:
         logger.info("DRY RUN MODE: Will not write to Google Sheets")
     if max_results:
@@ -753,10 +797,17 @@ def main_collect(
         all_items = all_items[:max_results]
         new_urls = new_urls[:max_results]
 
-    # Convert items to rows with validation
+    # Convert items to rows with validation + final numeric cleanup
     rows = []
     validation_failures = 0
     for item in all_items:
+        # Apply final strict numeric cleanup before row conversion
+        item["views"] = _clean_numeric_column(item.get("views"))
+        item["likes"] = _clean_numeric_column(item.get("likes"))
+        item["comments"] = _clean_numeric_column(item.get("comments"))
+        item["shares"] = _clean_numeric_column(item.get("shares"))
+        item["eng_total"] = _clean_numeric_column(item.get("eng_total"))
+        
         row = _item_to_row(item)
         if validate_row(row):
             rows.append(row)
@@ -874,8 +925,6 @@ def main_collect(
                 mark_seen(new_urls)
 
                 # Mark canonical URLs as seen (enhanced dedupe)
-                from datetime import datetime
-
                 current_date = datetime.now().strftime("%Y-%m-%d")
                 for canonical, platform, profile, post_url in new_canonical_items:
                     mark_seen_canonical(
@@ -984,8 +1033,6 @@ def main():
     # Validate --since format if provided
     if args.since:
         try:
-            from datetime import datetime
-
             datetime.strptime(args.since, "%Y-%m-%d")
         except ValueError:
             logger.error(
